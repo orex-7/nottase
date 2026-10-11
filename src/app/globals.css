@@ -1,0 +1,522 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 222.2 84% 4.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 84% 4.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 84% 4.9%;
+    --primary: 222.2 47.4% 11.2%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+    --muted: 210 40% 96.1%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+    --accent: 210 40% 96.1%;
+    --accent-foreground: 222.2 47.4% 11.2%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 222.2 84% 4.9%;
+    --radius: 0.5rem;
+    /* Azul usado para destacar a célula/seleção ativa da tabela do editor. */
+    --table-select: 217 91% 60%;
+  }
+
+  .dark {
+    --background: 0 0% 4%;
+    --foreground: 0 0% 92%;
+    --card: 0 0% 8%;
+    --card-foreground: 0 0% 92%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 0 0% 92%;
+    --primary: 0 0% 92%;
+    --primary-foreground: 0 0% 8%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 0 0% 92%;
+    --muted: 0 0% 14%;
+    --muted-foreground: 0 0% 62%;
+    --accent: 0 0% 16%;
+    --accent-foreground: 0 0% 96%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 16%;
+    --input: 0 0% 16%;
+    --ring: 0 0% 72%;
+    /* Azul de destaque da célula ativa — um pouco mais claro no tema escuro. */
+    --table-select: 213 94% 68%;
+  }
+}
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  .dark {
+    color-scheme: dark;
+  }
+
+  * {
+    @apply border-border;
+  }
+  html,
+  body {
+    height: 100%;
+    overflow: hidden;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+/* Esconde a barra de rolagem mantendo o scroll funcional.
+   Usado na grade da semana para não desalinhar as colunas. */
+@layer utilities {
+  .no-scrollbar {
+    -ms-overflow-style: none; /* IE e Edge */
+    scrollbar-width: none; /* Firefox */
+  }
+  .no-scrollbar::-webkit-scrollbar {
+    display: none; /* Chrome, Safari e Opera */
+    width: 0;
+    height: 0;
+  }
+
+  /* Mostra a barra de rolagem apenas quando o cursor está sobre o elemento,
+     SEM deslocar o conteúdo. O espaço da barra (10px) fica sempre reservado
+     via `scrollbar-gutter: stable` e pela largura fixa de `::-webkit-scrollbar`;
+     fora do hover apenas a alça fica transparente (invisível), então nada se
+     move quando ela aparece. Usada na sidebar de projetos. */
+  .scrollbar-on-hover {
+    /* Reserva o espaço da barra permanentemente (Firefox, Chrome/Edge, Safari). */
+    scrollbar-gutter: stable;
+    /* Firefox: barra sempre com largura visível, mas alça/trilha transparentes
+       enquanto o mouse não estiver sobre o elemento. */
+    scrollbar-width: auto;
+    scrollbar-color: transparent transparent;
+  }
+  .scrollbar-on-hover::-webkit-scrollbar {
+    /* Largura fixa: o "gutter" nunca colapsa, então o conteúdo não desloca. */
+    width: 10px;
+    height: 10px;
+    background: transparent;
+  }
+  .scrollbar-on-hover::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  .scrollbar-on-hover::-webkit-scrollbar-thumb {
+    /* Invisível por padrão, ocupando o espaço. */
+    background: transparent;
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  .scrollbar-on-hover:hover {
+    /* Firefox: a alça volta a ficar visível no hover (trilha transparente). */
+    scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
+  }
+  .scrollbar-on-hover:hover::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+    background: transparent;
+  }
+  .scrollbar-on-hover:hover::-webkit-scrollbar-thumb {
+    background: hsl(var(--muted-foreground) / 0.35);
+    border: 2px solid transparent;
+    background-clip: content-box;
+    border-radius: 9999px;
+  }
+  .scrollbar-on-hover:hover::-webkit-scrollbar-thumb:hover {
+    background: hsl(var(--muted-foreground) / 0.55);
+    background-clip: content-box;
+  }
+}
+
+/* ------------------------------------------------------------------------- */
+/* Conteúdo do editor rico de página (TipTap/ProseMirror).                    */
+/* Os nós (h1/h2/h3, ul/ol/li, blockquote, pre, a) são gerados em runtime,    */
+/* então estilizamos aqui (não dá para cobrir só com classes Tailwind).       */
+/* ------------------------------------------------------------------------- */
+.tiptap-content {
+  outline: none;
+  min-height: 100%;
+  line-height: 1.6;
+  /* Gutter à esquerda para o botão "+" do editor (estilo Notion), de modo que
+     ele fique na margem, sem sobrepor o texto da linha. O padding à direita
+     mantém a margem simétrica, com o conteúdo afastado das duas bordas. */
+  padding-left: 2.25rem;
+  padding-right: 2.25rem;
+}
+.tiptap-content:focus {
+  outline: none;
+}
+.tiptap-content > * + * {
+  margin-top: 0.5rem;
+}
+.tiptap-content p {
+  margin: 0;
+}
+.tiptap-content h1 {
+  font-size: 1.5rem;
+  font-weight: 700;
+  line-height: 1.3;
+}
+.tiptap-content h2 {
+  font-size: 1.25rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.tiptap-content h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.tiptap-content ul,
+.tiptap-content ol {
+  padding-left: 1.25rem;
+}
+.tiptap-content ul {
+  list-style: disc;
+}
+.tiptap-content ol {
+  list-style: decimal;
+}
+.tiptap-content li > p {
+  margin: 0;
+}
+.tiptap-content blockquote {
+  border-left: 3px solid hsl(var(--border));
+  padding-left: 0.75rem;
+  color: hsl(var(--muted-foreground));
+}
+.tiptap-content code {
+  background: hsl(var(--muted));
+  border-radius: 0.25rem;
+  padding: 0.1rem 0.3rem;
+  font-size: 0.85em;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.tiptap-content pre {
+  background: hsl(var(--muted));
+  border-radius: 0.375rem;
+  padding: 0.6rem 0.75rem;
+  overflow-x: auto;
+}
+.tiptap-content pre code {
+  background: none;
+  padding: 0;
+}
+.tiptap-content a {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.tiptap-content u {
+  text-underline-offset: 2px;
+}
+.tiptap-content hr {
+  border: none;
+  border-top: 1px solid hsl(var(--border));
+  margin: 0.75rem 0;
+}
+
+/* Imagens inseridas no conteúdo (extensão Image do TipTap).                  */
+.tiptap-content img {
+  max-width: 100%;
+  height: auto;
+  border-radius: 0.5rem;
+  margin: 0.75rem 0;
+  display: block;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Redimensionamento de imagem (ResizableNodeView do TipTap).                  */
+/* Estrutura montada pelo NodeView:                                            */
+/*   div[data-resize-container]  (flex; recebe .ProseMirror-selectednode)      */
+/*     div[data-resize-wrapper]  (position: relative)                          */
+/*       <img>                                                                 */
+/*       div[data-resize-handle="bottom-right"|...]  (alças)                   */
+/* ------------------------------------------------------------------------- */
+
+/* O wrapper não deve estourar a largura do conteúdo. */
+.tiptap-content [data-resize-container] {
+  margin: 0.75rem 0;
+  max-width: 100%;
+  /* Mantém a imagem centralizada na página, inclusive ao redimensionar: o
+     wrapper (que encolhe junto com a imagem) fica centralizado no container. */
+  justify-content: center;
+}
+.tiptap-content [data-resize-wrapper] {
+  /* Garante que o wrapper encolha até o tamanho da imagem (não ocupe a largura
+     toda), para poder ser centralizado. */
+  flex: 0 1 auto;
+}
+.tiptap-content [data-resize-wrapper] img {
+  margin: 0;
+}
+
+/* Contorno sutil quando a imagem está selecionada (estilo Notion). */
+.tiptap-content [data-resize-container].ProseMirror-selectednode
+  [data-resize-wrapper] {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+  border-radius: 0.5rem;
+}
+
+/* Alças de redimensionamento: invisíveis por padrão; aparecem ao passar o    */
+/* mouse sobre a imagem ou quando ela está selecionada.                       */
+/* Cada alça fica no MEIO de uma borda lateral (esquerda e direita). O         */
+/* NodeView estica a alça ao longo da borda (left/right: top+bottom = 0),      */
+/* então sobrescrevemos o lado oposto com `!important` e usamos `translate`    */
+/* para centralizar a bolinha no meio.                                         */
+.tiptap-content [data-resize-handle] {
+  width: 12px;
+  height: 12px;
+  border-radius: 9999px;
+  background-color: #ffffff;
+  border: 2px solid hsl(var(--primary, 222 47% 11%));
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  opacity: 0;
+  z-index: 10;
+  transition: opacity 0.12s ease;
+}
+
+/* Meio da borda esquerda e direita: centraliza verticalmente. */
+.tiptap-content [data-resize-handle="left"] {
+  top: 50% !important;
+  bottom: auto !important;
+  transform: translate(-50%, -50%);
+}
+.tiptap-content [data-resize-handle="right"] {
+  top: 50% !important;
+  bottom: auto !important;
+  transform: translate(50%, -50%);
+}
+
+.tiptap-content [data-resize-container]:hover [data-resize-handle],
+.tiptap-content [data-resize-container].ProseMirror-selectednode
+  [data-resize-handle],
+.tiptap-content [data-resize-container][data-resize-state="true"]
+  [data-resize-handle] {
+  opacity: 1;
+}
+
+/* Leve realce no hover da alça (mantendo o translate de centralização). */
+.tiptap-content [data-resize-handle="left"]:hover {
+  transform: translate(-50%, -50%) scale(1.15);
+}
+.tiptap-content [data-resize-handle="right"]:hover {
+  transform: translate(50%, -50%) scale(1.15);
+}
+
+/* Cursores por borda, para indicar a direção do redimensionamento. */
+.tiptap-content [data-resize-handle="left"],
+.tiptap-content [data-resize-handle="right"] {
+  cursor: ew-resize;
+}
+
+/* Enquanto arrasta, deixa claro que a imagem está sendo redimensionada. */
+.tiptap-content [data-resize-container][data-resize-state="true"]
+  [data-resize-wrapper] {
+  outline: 2px solid hsl(var(--ring));
+  outline-offset: 2px;
+}
+
+/* Lista de tarefas (checkbox) gerada pelo TaskList/TaskItem do TipTap. */
+.tiptap-content ul[data-type="taskList"] {
+  list-style: none;
+  padding-left: 0.25rem;
+}
+.tiptap-content ul[data-type="taskList"] li {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+.tiptap-content ul[data-type="taskList"] li > label {
+  flex: none;
+  margin-top: 0.15rem;
+  user-select: none;
+}
+.tiptap-content ul[data-type="taskList"] li > div {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.tiptap-content ul[data-type="taskList"] input[type="checkbox"] {
+  cursor: pointer;
+}
+.tiptap-content ul[data-type="taskList"] li[data-checked="true"] > div {
+  color: hsl(var(--muted-foreground));
+  text-decoration: line-through;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tabelas (extensões Table/TableRow/TableCell/TableHeader do TipTap).         */
+/* O NodeView envolve a tabela num `.tableWrapper` (rolagem horizontal em      */
+/* telas estreitas).                                                           */
+/* ------------------------------------------------------------------------- */
+.tiptap-content .tableWrapper {
+  margin: 0.75rem 0;
+  overflow-x: auto;
+}
+.tiptap-content table {
+  border-collapse: collapse;
+  table-layout: fixed;
+  width: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+.tiptap-content table td,
+.tiptap-content table th {
+  /* Grade uniforme: as linhas verticais (divisórias de coluna) usam a MESMA    */
+  /* cor das linhas horizontais (`--border`).                                   */
+  border: 1px solid hsl(var(--border));
+  padding: 0.4rem 0.6rem;
+  vertical-align: top;
+  position: relative;
+  min-width: 4rem;
+}
+.tiptap-content table th {
+  background: hsl(var(--muted));
+  font-weight: 600;
+  text-align: left;
+}
+.tiptap-content table td > p,
+.tiptap-content table th > p {
+  margin: 0;
+}
+/* Célula selecionada (ex.: via seleção de célula ou teclado). O ProseMirror    */
+/* aplica a classe `selectedCell` a cada célula da seleção — funciona tanto     */
+/* para 1 célula quanto para várias. Recebe um leve fundo azul E um anel azul.  */
+.tiptap-content table .selectedCell::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: hsl(var(--table-select) / 0.12);
+  pointer-events: none;
+  z-index: 2;
+}
+/* Célula com a seleção ativa: um anel azul. Usamos `box-shadow` inset (em vez  */
+/* de `border`/`outline`) porque ele é pintado POR CIMA do fundo da célula e    */
+/* não é recortado pelo `border-collapse` da tabela, garantindo que o contorno  */
+/* apareça em todos os lados.                                                    */
+.tiptap-content table .selectedCell {
+  position: relative;
+  z-index: 3;
+  box-shadow: inset 0 0 0 2px hsl(var(--table-select));
+}
+/* Célula onde o cursor está (clique simples). A classe é aplicada por uma      */
+/* decoração do ProseMirror (extensão `TableCellCursorHighlight`), pois a Table  */
+/* só marca as células com `selectedCell` durante uma seleção de célula.        */
+.tiptap-content table td.table-cursor-cell,
+.tiptap-content table th.table-cursor-cell {
+  position: relative;
+  z-index: 3;
+  box-shadow: inset 0 0 0 2px hsl(var(--table-select));
+}
+/* Células com cor de fundo custom (atributo `background`, aplicado inline).    */
+/* O texto mantém a cor de primeiro plano do tema para garantir legibilidade    */
+/* sobre os tons claros da paleta.                                              */
+.tiptap-content table td[data-background],
+.tiptap-content table th[data-background] {
+  color: hsl(var(--foreground));
+}
+/* Colunas redimensionáveis: alça invisível por padrão, visível ao passar o   */
+/* mouse sobre a borda da célula.                                             */
+.tiptap-content table .column-resize-handle {
+  position: absolute;
+  right: -2px;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background-color: hsl(var(--primary));
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.tiptap-content table:hover .column-resize-handle,
+.tiptap-content.resize-cursor .column-resize-handle {
+  opacity: 0.5;
+}
+.tiptap-content.resize-cursor {
+  cursor: col-resize;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Tabela da visualização de banco de dados (`DatabaseView`, view "table").   */
+/* As divisórias verticais entre colunas usam a MESMA cor das linhas          */
+/* horizontais (`--border`). Elas aparecem apenas nas linhas de dados (`td`), */
+/* não nos cabeçalhos de propriedades (`th`), que permanecem sem grade        */
+/* vertical para não poluir a barra de propriedades.                          */
+/* ------------------------------------------------------------------------- */
+[data-database-table] td {
+  border-right: 1px solid hsl(var(--border));
+}
+[data-database-table] td:first-child {
+  border-left: 1px solid hsl(var(--border));
+}
+/* Coluna de ações (lixeira) e coluna fantasma finais sem divisória à direita
+   para não "vazar": a última célula é a fantasma (`aria-hidden`) e a
+   penúltima guarda as ações, então removemos a divisória de ambas. */
+[data-database-table] tr > td:nth-last-child(-n + 2) {
+  border-right: none;
+}
+/* Altura da linha estável: o conteúdo nunca quebra para várias linhas ao      */
+/* estreitar a coluna (redimensionamento). Assim a altura do item só depende   */
+/* da quantidade de linhas de texto e não da largura da coluna.                */
+/* Não usamos `overflow: hidden` aqui porque os `td`/`th` contêm menus          */
+/* absolutos (editor de coluna, menu de célula) que seriam recortados.         */
+[data-database-table] td,
+[data-database-table] th {
+  white-space: nowrap;
+}
+
+/* Placeholder (extensão Placeholder) quando o documento está vazio.          */
+/* Deixa explícito onde o usuário pode começar a digitar.                     */
+.tiptap-content p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  height: 0;
+  pointer-events: none;
+  font-style: italic;
+  color: hsl(var(--muted-foreground));
+  opacity: 0.9;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Barras de rolagem: trilha (background) transparente em todo o app.          */
+/* Mantém apenas a "alça" (thumb) visível, pareada e discreta, para não        */
+/* "sujar" os painéis com uma faixa de fundo. Vale para Chrome/Edge/Safari    */
+/* (WebKit/Blink) e Firefox. A utility `.no-scrollbar` continua escondendo    */
+/* totalmente a barra onde for usada.                                         */
+/* ------------------------------------------------------------------------- */
+* {
+  scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent; /* Firefox */
+}
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+  background: transparent; /* Remove o fundo da própria barra */
+}
+::-webkit-scrollbar-track {
+  background: transparent; /* Remove o fundo da trilha */
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.35);
+  border: 2px solid transparent;
+  background-clip: content-box;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--muted-foreground) / 0.55);
+  background-clip: content-box;
+}
+
