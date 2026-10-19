@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { CalendarDays } from "lucide-react";
 
 import { LoginButton } from "@/components/auth/LoginButton";
@@ -18,7 +19,7 @@ export default function LoginPage({
   const redirectTo =
     searchParams.redirectTo && searchParams.redirectTo.startsWith("/")
       ? searchParams.redirectTo
-      : "/";
+      : "/app";
   const errorMessage = searchParams.error
     ? ERROR_MESSAGES[searchParams.error] ?? "Ocorreu um erro ao entrar."
     : null;
@@ -46,6 +47,15 @@ export default function LoginPage({
 
         <p className="mt-6 text-center text-[11px] leading-relaxed text-muted-foreground">
           Seus eventos são privados e visíveis apenas para você.
+        </p>
+
+        <p className="mt-4 text-center text-[11px] text-muted-foreground">
+          <Link
+            href="/"
+            className="underline-offset-4 hover:text-foreground hover:underline"
+          >
+            ← Voltar para a apresentação
+          </Link>
         </p>
       </div>
     </main>

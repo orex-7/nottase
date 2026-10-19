@@ -150,7 +150,7 @@ export function CalendarSidebar({
           onClick={toggleCollapsed}
           aria-label="Expandir sidebar"
           title="Expandir sidebar"
-          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <PanelLeftOpen className="h-4 w-4" />
         </button>
@@ -159,7 +159,7 @@ export function CalendarSidebar({
           onClick={() => setIsDbMenuOpen((v) => !v)}
           aria-label="Adicionar database"
           title="Adicionar database"
-          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Table2 className="h-4 w-4" />
         </button>

@@ -233,7 +233,7 @@ function CategoryColorButton({
         aria-label={`Cor da categoria ${label}`}
         aria-expanded={open}
         title="Alterar cor"
-        className="flex h-7 w-7 flex-none items-center justify-center rounded hover:bg-accent"
+        className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded hover:bg-accent"
       >
         <span className={cn("h-3.5 w-3.5 rounded-full", color)} />
       </button>
@@ -353,7 +353,7 @@ export function CategoryEditPopover({
               onClose();
             }
           }}
-          className="h-7 min-w-0 flex-1 border-0 px-1 shadow-none"
+          className="min-w-0 flex-1 border-0 px-1 shadow-none"
           aria-label={`Nome da categoria ${name}`}
         />
         <button
@@ -364,7 +364,7 @@ export function CategoryEditPopover({
           }}
           aria-label={`Excluir categoria ${name}`}
           title="Excluir categoria"
-          className="flex h-7 w-7 flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+          className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
         >
           <Trash2 className="h-3.5 w-3.5" />
         </button>
@@ -783,7 +783,7 @@ function ProjectCard({ project, onOpen, onDelete }: ProjectCardProps) {
         onClick={() => onDelete(project.id)}
         aria-label={`Excluir ${project.name}`}
         title="Excluir projeto"
-        className="absolute top-3 right-3 flex h-7 w-7 items-center justify-center rounded text-muted-foreground opacity-0 transition-colors group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100"
+        className="absolute top-3 right-3 flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground opacity-0 transition-colors group-hover:opacity-100 hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100"
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>

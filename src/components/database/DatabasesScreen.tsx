@@ -4,11 +4,12 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { createPortal } from "react-dom";
-import { Database, Plus, Table2, Trash2 } from "lucide-react";
+import { Check, ChevronDown, Database, Link2, Plus, Search, Table2, Trash2, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -28,12 +29,20 @@ export interface DatabaseSummary {
   rowCount: number;
   /** Quantidade de propriedades/colunas do database. */
   columnCount: number;
+  /** Visão vinculada: id do database de origem (`null` = database próprio). */
+  linkedDatabaseId?: string | null;
 }
 
 /** Dados informados no popover de criação de database. */
 export interface NewDatabaseInput {
   name: string;
   icon: string | null;
+  /**
+   * Id de um database existente para **espelhar**: o novo database nasce como
+   * uma **visão vinculada** dele (mesmas propriedades e itens, ao vivo).
+   * `null`/ausente = database próprio (vazio).
+   */
+  linkedDatabaseId?: string | null;
 }
 
 interface DatabasesScreenProps {
@@ -76,6 +85,14 @@ export function DatabasesScreen({
     [onCreate],
   );
 
+  /** Busca por nome do database (case-insensitive). */
+  const [search, setSearch] = useState("");
+  const filteredDatabases = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return databases;
+    return databases.filter((db) => db.name.toLowerCase().includes(q));
+  }, [databases, search]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
@@ -88,10 +105,22 @@ export function DatabasesScreen({
             <span className="text-lg font-semibold">Databases</span>
           </div>
 
-          <Button ref={headerButtonRef} size="sm" onClick={openCreate}>
-            <Plus />
-            Criar database
-          </Button>
+          <div className="flex items-center gap-2">
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Buscar database..."
+                aria-label="Buscar database por nome"
+                className="w-48 pl-7"
+              />
+            </div>
+            <Button ref={headerButtonRef} size="sm" onClick={openCreate}>
+              <Plus />
+              Criar database
+            </Button>
+          </div>
         </div>
 
         {/* Conteúdo: grade de databases ou estado vazio */}
@@ -112,9 +141,13 @@ export function DatabasesScreen({
                 Criar database
               </Button>
             </div>
+          ) : filteredDatabases.length === 0 ? (
+            <div className="flex h-full min-h-[240px] items-center justify-center text-sm text-muted-foreground">
+              Nenhum database encontrado.
+            </div>
           ) : (
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
-              {databases.map((db) => (
+              {filteredDatabases.map((db) => (
                 <DatabaseCard
                   key={db.id}
                   database={db}
@@ -140,6 +173,11 @@ export function DatabasesScreen({
       {createOpen ? (
         <CreateDatabasePopover
           anchorEl={headerButtonRef.current}
+          databases={databases.map((db) => ({
+            id: db.id,
+            name: db.name,
+            icon: db.icon,
+          }))}
           onCancel={closeCreate}
           onConfirm={handleConfirmCreate}
         />
@@ -188,7 +226,7 @@ function DatabaseCard({ database, onOpen, onDelete }: DatabaseCardProps) {
         onClick={() => onDelete(database.id)}
         aria-label={`Excluir ${database.name}`}
         title="Excluir database"
-        className="absolute top-3 right-3 flex h-7 w-7 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+        className="absolute top-3 right-3 flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
       >
         <Trash2 className="h-3.5 w-3.5" />
       </button>
@@ -199,6 +237,16 @@ function DatabaseCard({ database, onOpen, onDelete }: DatabaseCardProps) {
 export interface CreateDatabasePopoverProps {
   /** Elemento ao qual o popover fica ancorado (o botão "Criar database"). */
   anchorEl: HTMLElement | null;
+  /**
+   * Databases existentes que podem ser **espelhados** (visão vinculada). Visões
+   * vinculadas são excluídas da lista (não se espelha uma visão).
+   */
+  databases?: {
+    id: string;
+    name: string;
+    icon: string | null;
+    linkedDatabaseId?: string | null;
+  }[];
   onCancel: () => void;
   onConfirm: (input: NewDatabaseInput) => void;
 }
@@ -211,12 +259,17 @@ export interface CreateDatabasePopoverProps {
  */
 export function CreateDatabasePopover({
   anchorEl,
+  databases = [],
   onCancel,
   onConfirm,
 }: CreateDatabasePopoverProps) {
   const [name, setName] = useState("");
   const [icon, setIcon] = useState<string | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
+  /** Id do database escolhido para **espelhar** (visão vinculada, opcional). */
+  const [linkedId, setLinkedId] = useState<string | null>(null);
+  /** Seletor "Espelhar database…" está aberto. */
+  const [linkedPickerOpen, setLinkedPickerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   /** Posição (top/left) do popover, calculada ao abrir a partir do âncora. */
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -241,22 +294,30 @@ export function CreateDatabasePopover({
     if (pos) inputRef.current?.focus();
   }, [pos]);
 
-  // Fecha com Esc: primeiro o seletor de ícone, depois o popover inteiro.
+  // Fecha com Esc: primeiro o seletor de espelho, depois o de ícone, depois o popover.
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.stopPropagation();
-        if (pickerOpen) setPickerOpen(false);
+        if (linkedPickerOpen) setLinkedPickerOpen(false);
+        else if (pickerOpen) setPickerOpen(false);
         else onCancel();
       }
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [onCancel, pickerOpen]);
+  }, [onCancel, pickerOpen, linkedPickerOpen]);
 
   const ActiveIcon = databaseIcon(icon);
+  /** Database escolhido para espelhar (para exibir o nome no botão). */
+  const linkedSource = databases.find((db) => db.id === linkedId) ?? null;
 
-  const submit = () => onConfirm({ name: name.trim() || "Novo database", icon });
+  const submit = () =>
+    onConfirm({
+      name: name.trim() || "Novo database",
+      icon,
+      linkedDatabaseId: linkedId,
+    });
 
   return createPortal(
     <div className="fixed inset-0 z-50" onClick={onCancel} role="presentation">
@@ -289,7 +350,7 @@ export function CreateDatabasePopover({
               aria-expanded={pickerOpen}
               title="Escolher ícone"
               aria-label="Escolher ícone"
-              className="flex h-9 flex-none items-center gap-1 rounded-md border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-[30px] flex-none items-center gap-1 rounded-md border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <ActiveIcon className="h-4 w-4" />
             </button>
@@ -349,6 +410,92 @@ export function CreateDatabasePopover({
                     );
                   })}
                 </div>
+              </div>
+            ) : null}
+          </div>
+
+          {/* Espelhar database: cria o novo database como uma **visão vinculada**
+              do database escolhido (mesmas propriedades e itens, ao vivo). */}
+          <div className="relative mt-3">
+            <button
+              type="button"
+              onClick={() => {
+                setLinkedPickerOpen((v) => !v);
+                setPickerOpen(false);
+              }}
+              aria-haspopup="menu"
+              aria-expanded={linkedPickerOpen}
+              className={cn(
+                "flex w-full items-center gap-2 rounded-md border px-2 py-1.5 text-sm hover:bg-accent hover:text-foreground",
+                linkedId ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              <Link2 className="h-4 w-4 flex-none" />
+              <span className="min-w-0 flex-1 truncate text-left">
+                {linkedSource
+                  ? `Espelhar ${linkedSource.name}`
+                  : "Espelhar database…"}
+              </span>
+              <ChevronDown className="h-3.5 w-3.5 flex-none" />
+            </button>
+
+            {linkedPickerOpen ? (
+              <div
+                role="menu"
+                aria-label="Escolher database para espelhar"
+                className="absolute left-0 top-full z-10 mt-1 max-h-56 w-full overflow-y-auto rounded-md border bg-popover p-1 shadow-md"
+              >
+                {linkedId ? (
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      setLinkedId(null);
+                      setLinkedPickerOpen(false);
+                    }}
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <X className="h-3.5 w-3.5 flex-none" />
+                    Sem vínculo
+                  </button>
+                ) : null}
+                {databases.filter((db) => !db.linkedDatabaseId).length === 0 ? (
+                  <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                    Nenhum database.
+                  </p>
+                ) : (
+                  databases
+                    .filter((db) => !db.linkedDatabaseId)
+                    .map((db) => {
+                      const isActive = db.id === linkedId;
+                      return (
+                        <button
+                          key={db.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            setLinkedId(db.id);
+                            setLinkedPickerOpen(false);
+                            // Espelha também o **nome** da origem (se ainda vazio).
+                            if (!name.trim()) setName(db.name);
+                          }}
+                          className={cn(
+                            "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                            isActive
+                              ? "text-foreground"
+                              : "text-muted-foreground",
+                          )}
+                        >
+                          <span className="min-w-0 flex-1 truncate">
+                            {db.name}
+                          </span>
+                          {isActive ? (
+                            <Check className="ml-auto h-3.5 w-3.5 flex-none" />
+                          ) : null}
+                        </button>
+                      );
+                    })
+                )}
               </div>
             ) : null}
           </div>

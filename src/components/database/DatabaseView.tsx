@@ -2,7 +2,11 @@
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type {
+  FocusEvent as ReactFocusEvent,
+  MouseEvent as ReactMouseEvent,
+  PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   AlignLeft,
   ArrowLeft,
@@ -14,6 +18,7 @@ import {
   ChartColumn,
   ChartLine,
   ChartPie,
+  Check,
   CheckSquare,
   ChevronDown,
   ChevronRight,
@@ -40,6 +45,7 @@ import {
   MessageSquare,
   Package,
   Percent,
+  Pencil,
   Plane,
   Plus,
   Search,
@@ -81,6 +87,107 @@ import { DatabasesScreen } from "@/components/database/DatabasesScreen";
 import type { NewProjectInput } from "@/components/database/ProjectsScreen";
 import { ProjectsSidebar } from "@/components/database/ProjectsSidebar";
 import { PageEditor } from "@/components/database/PageEditor";
+import { RowPageContent } from "@/components/database/RowPageContent";
+import { KanbanBoard } from "@/components/database/KanbanBoard";
+import { PageTemplateDialog } from "@/components/database/PageTemplateDialog";
+import {
+  SelectOptionsEditor,
+  SelectOptionsPopover,
+  StatusCategoryTabs,
+} from "@/components/database/SelectOptionsPopover";
+import { TableSettingsPopover } from "@/components/database/TableSettingsPopover";
+import {
+  ACTIONS_COLUMN_WIDTH,
+  CALC_FUNCTIONS,
+  calcFunctionLabel,
+  cellAreaClick,
+  cellOf,
+  COLUMN_TYPES,
+  columnIcon,
+  columnTypeMeta,
+  columnWidth,
+  DECIMAL_OPTIONS,
+  decimalsLabel,
+  DEFAULT_COLUMN_WIDTH,
+  defaultKanbanColumnId,
+  editableOptionsForColumn,
+  formatShortDate,
+  kanbanGroupColumns,
+  MAX_COLUMN_WIDTH,
+  minColumnWidth,
+  newColumnId,
+  newOptionId,
+  NUMBER_FORMATS,
+  numberFormatLabel,
+  OPTION_COLORS,
+  optionsForColumn,
+  relatedDatabaseFor,
+  ROW_GUTTER_WIDTH,
+  STATUS_CATEGORIES,
+  STATUS_OPTIONS,
+  TAG_OPTIONS,
+  tagById,
+  titleColumnOf,
+} from "@/components/database/database-fields";
+import {
+  RECURRENCE_ENDS,
+  RECURRENCE_FREQUENCIES,
+  describeRecurrence,
+  emptyRecurrence,
+  formatRecurrenceDate,
+  recurrenceHtmlSection,
+  templateContentHtml,
+} from "@/components/database/database-recurrence-ui";
+import {
+  useFlipPopover,
+  useFlipSide,
+} from "@/components/database/use-flip-popover";
+import {
+  DEFAULT_ROW_HEIGHT,
+  useVirtualTableRows,
+} from "@/components/database/use-virtual-table-rows";
+import {
+  ROWS_PAGE_SIZE,
+  useDatabaseRows,
+} from "@/components/database/use-database-rows";
+import { useAllDatabaseRows } from "@/components/database/use-all-database-rows";
+import {
+  CHART_COUNT,
+  ChartView,
+  chartGroupColumns,
+  chartNumberColumns,
+  defaultChartConfig,
+  isChartConfig,
+  type ChartConfig,
+} from "@/components/database/database-chart";
+import { Chip, NumberCellInput } from "@/components/database/database-cells";
+import { RelationCell, RelationTitle } from "@/components/database/RelationCell";
+import { RelationSelect } from "@/components/database/RelationSelect";
+import { invalidateRelatedRows } from "@/components/database/use-related-rows";
+import {
+  invalidateRelationLinks,
+  useRelationLinks,
+} from "@/components/database/use-relation-links";
+import {
+  invalidateRollupValues,
+  staleRollupValues,
+  useRollupValues,
+} from "@/components/database/use-rollup-values";
+import { useColumnAggregates } from "@/components/database/use-column-aggregates";
+import { DatabaseItemPopover } from "@/components/calendar/DatabaseItemPopover";
+import {
+  EMPTY_FILTER_IDS,
+  EMPTY_FILTER_VALUES,
+  VIEW_TYPES,
+  initialViews,
+  loadPersistedViews,
+  newViewId,
+  savePersistedViews,
+  viewTypeMeta,
+  type DbView,
+  type DbViewType,
+  type PersistedViews,
+} from "@/components/database/database-views";
 import { useCalendarStore } from "@/store/useCalendarStore";
 import { cn } from "@/lib/utils";
 import { ensureHtml } from "@/lib/markdown";
@@ -91,9 +198,11 @@ import { ICON_OPTIONS, ICON_BY_NAME, databaseIcon } from "@/lib/database-icons";
 import {
   formatNumberByColumn,
   formatNumberValue,
+  parseNumberValue,
 } from "@/lib/number-format";
 import {
   createDatabase,
+  createLinkedDatabase,
   createProject,
   createProjectCategory,
   createRow,
@@ -118,6 +227,21 @@ import {
   updateRowPositions,
   updateRowValues,
   DEFAULT_PROJECT_NAME,
+  createRowAtEnd,
+  countDatabaseRows,
+  fetchRowById,
+  fetchDatabaseById,
+  updateRowCell,
+  addRelationLink,
+  removeRelationLink,
+  createRelationProperty,
+  deleteRelationProperty,
+  setRelationLimit,
+  cleanupRelationsForDatabase,
+  type ColumnAggregateRequest,
+  type FilterOperator,
+  type RowsFilter,
+  type RollupValueRequest,
 } from "@/lib/database";
 import type {
   CellValue,
@@ -132,6 +256,8 @@ import type {
   Recurrence,
   RecurrenceEnd,
   RecurrenceFrequency,
+  RelationLimit,
+  RollupConfig,
   SelectOption,
   StatusCategory,
 } from "@/types/database";
@@ -141,1505 +267,190 @@ import {
   recurrenceOccurrences,
 } from "@/types/database";
 
-/** Larguras (px) das colunas: padr�o, m�nimo e m�ximo redimension�vel. */
-const DEFAULT_COLUMN_WIDTH = 220;
-const MIN_COLUMN_WIDTH = 96;
-/**
- * M�nimo (px) para colunas de caixa de sele��o: permite reduzir a coluna at�
- * que reste apenas o �cone da propriedade no cabe�alho (nome truncado).
+/*
+ * Este arquivo agora contém apenas o `DatabaseTable` (tabela/visualizações) e o
+ * wrapper `DatabaseView`. As partes independentes foram extraídas para módulos
+ * irmãos em `src/components/database/`:
+ *   - database-fields.ts        (tipos de coluna, ícones, opções, células, Kanban)
+ *   - database-cells.tsx        (NumberCellInput, Chip)
+ *   - database-chart.tsx        (visualização Gráfico)
+ *   - database-recurrence-ui.ts (UI de recorrência)
+ *   - database-views.ts         (tipos/persistência de visualizações)
+ *   - use-flip-popover.ts       (hooks de posicionamento de popover)
+ *   - RowPageContent.tsx        (página do item)
+ *   - KanbanBoard.tsx           (quadro Kanban)
+ *   - PageTemplateDialog.tsx    (modelos de página)
+ *   - SelectOptionsPopover.tsx  (editores de opções Seleção/Status)
+ *   - TableSettingsPopover.tsx  (configurações da tabela)
  */
-const CHECKBOX_MIN_COLUMN_WIDTH = 52;
-const MAX_COLUMN_WIDTH = 640;
-/** Largura da coluna final que guarda as a��es (excluir linha). */
-const ACTIONS_COLUMN_WIDTH = 44;
-
-/** Largura efetiva de uma coluna (respeita o valor persistido, se houver). */
-function columnWidth(column: Column): number {
-  return column.width ?? DEFAULT_COLUMN_WIDTH;
-}
-
-/**
- * Largura m�nima redimension�vel de uma coluna. Colunas de caixa de sele��o
- * podem encolher mais que as demais: o m�nimo � suficiente para exibir apenas
- * o �cone da propriedade (o nome � truncado/oculto).
- */
-function minColumnWidth(column: Column): number {
-  return column.type === "checkbox" ? CHECKBOX_MIN_COLUMN_WIDTH : MIN_COLUMN_WIDTH;
-}
-
-const COLUMN_TYPES: {
-  type: ColumnType;
-  label: string;
-  icon: typeof AlignLeft;
-}[] = [
-  { type: "text", label: "Texto", icon: AlignLeft },
-  { type: "number", label: "N�mero", icon: Hash },
-  { type: "select", label: "Sele��o", icon: List },
-  { type: "status", label: "Status", icon: CircleDashed },
-  { type: "multi_select", label: "Sele��o m�ltipla", icon: Tags },
-  { type: "date", label: "Data", icon: CalendarDays },
-  { type: "checkbox", label: "Caixa de sele��o", icon: CheckSquare },
-  { type: "person", label: "Pessoa", icon: User },
-];
-
-function columnTypeMeta(type: ColumnType) {
-  return COLUMN_TYPES.find((t) => t.type === type) ?? COLUMN_TYPES[0];
-}
 
 /**
- * Resolve o �cone exibido para uma propriedade: o escolhido pelo usu�rio
- * (`column.icon`), ou o �cone padr�o do tipo quando ausente/"Autom�tico".
+ * Linha de preenchimento (spacer) usada na virtualização da tabela: ocupa o
+ * espaço das linhas fora da área visível, para a barra de rolagem refletir o
+ * total real. É uma única célula com `colSpan` (não distorce o `<colgroup>`) e
+ * sem padding/borda (não herda a grade de `[data-database-table] td`).
  */
-function columnIcon(column: Column) {
-  if (column.icon) {
-    const custom = ICON_BY_NAME[column.icon];
-    if (custom) return custom;
-  }
-  return columnTypeMeta(column.type).icon;
-}
-
-/**
- * Op��es de formato de n�mero (estilo Notion). A quarta op��o, "Moedas", abre a
- * lista de 30 moedas em vez de ser um valor de `NumberFormat` pr�prio.
- */
-const NUMBER_FORMATS: {
-  value: NumberFormat;
-  label: string;
-  icon: typeof Hash;
-}[] = [
-  { value: "plain", label: "N�mero", icon: Hash },
-  { value: "separators", label: "N�mero com separadores", icon: ListOrdered },
-  { value: "percent", label: "Percentual", icon: Percent },
-];
-
-/** R�tulo curto do formato de n�mero atual de uma coluna (ex.: "Moedas � R$"). */
-function numberFormatLabel(column: Column): string {
-  if (column.numberFormat === "separators") return "N�mero com separadores";
-  if (column.numberFormat === "percent") return "Percentual";
-  if (column.numberFormat === "currency") {
-    const currency = currencyByCode(column.currency);
-    return `Moedas � ${currency.symbol} ${currency.code}`;
-  }
-  return "N�mero";
-}
-
-/**
- * Op��es de casas decimais exibidas por uma coluna num�rica. `null` = "Padr�o"
- * (mostra o m�nimo de casas que represente o valor, at� 2 decimais).
- */
-const DECIMAL_OPTIONS: { value: number | null; label: string }[] = [
-  { value: null, label: "Padr�o" },
-  { value: 0, label: "0" },
-  { value: 1, label: "1" },
-  { value: 2, label: "2" },
-  { value: 3, label: "3" },
-  { value: 4, label: "4" },
-  { value: 5, label: "5" },
-];
-
-/** R�tulo do n�mero de casas decimais atual (ex.: "2" ou "Padr�o"). */
-function decimalsLabel(column: Column): string {
-  const decimals = column.decimals ?? null;
-  if (decimals === null) return "Padr�o";
-  return String(decimals);
-}
-
-/**
- * Input de uma c�lula num�rica. Enquanto **n�o est� em foco**, exibe o valor com
- * o formato escolhido (separadores/percentual/moeda � estilo Notion) por cima do
- * input transparente; ao focar, revela o valor cru edit�vel. Sem isso o usu�rio
- * n�o conseguiria digitar (o formato atrapalharia a edi��o).
- */
-function NumberCellInput({
-  value,
-  column,
-  onChange,
-}: {
-  value: CellValue;
-  column: Column;
-  onChange: (next: string) => void;
-}) {
-  const [focused, setFocused] = useState(false);
-  const textValue = Array.isArray(value) ? value.join(", ") : (value ?? "");
-  const display = formatNumberValue(value, column);
-  // S� usa o overlay quando h� algo formatado diferente do valor cru (evita
-  // esconder o cursor de digita��o desnecessariamente).
-  const showOverlay = !focused && display !== "" && display !== textValue;
-
+function TableSpacerRow({ height, colSpan }: { height: number; colSpan: number }) {
   return (
-    <div className="relative flex w-full min-w-0 items-center">
-      <input
-        type="text"
-        inputMode="decimal"
-        value={textValue}
-        onChange={(e) => onChange(e.target.value)}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        aria-label={column.name}
-        className={cn(
-          "w-full min-w-0 rounded bg-transparent pl-1 pr-2 py-1 outline-none focus:outline-none",
-          showOverlay && "text-transparent caret-transparent",
-        )}
-      />
-      {showOverlay ? (
-        <span className="pointer-events-none absolute inset-y-0 left-1 flex items-center truncate pr-2 text-foreground">
-          {display}
-        </span>
-      ) : null}
-    </div>
+    <tr aria-hidden>
+      <td colSpan={colSpan} style={{ height, padding: 0, border: 0 }} />
+    </tr>
   );
 }
 
 /**
- * Detecta se um popover cabe abaixo/� direita do seu ponto de ancoragem; caso
- * contr�rio, o "flipa" (estilo Notion) para cima e/ou para a esquerda. Mede o
- * tamanho real do popover ap�s montar (e a cada mudan�a de conte�do/tamanho da
- * janela) e devolve as classes de posicionamento e o ref que deve ser aplicado
- * ao elemento do popover.
- *
- * O popover deve ter `position: absolute` e vir ancorado por padr�o em `top-full`
- * e `left-0`; o hook alterna para `bottom-full` e `right-0` quando falta espa�o.
+ * Posição para inserir uma linha entre dois vizinhos, aproveitando os gaps de
+ * 1000. Devolve `null` quando não há espaço (vizinhos adjacentes ou sem
+ * posição) — sinal de que é preciso renumerar a janela.
  */
-function useFlipPopover<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
-  const [flipY, setFlipY] = useState(false);
-  const [flipX, setFlipX] = useState(false);
-
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-
-    const measure = () => {
-      const rect = element.getBoundingClientRect();
-      // Espaco disponivel tomando o popover ja renderizado como referencia.
-      const spaceBelow = window.innerHeight - rect.top;
-      const spaceRight = window.innerWidth - rect.left;
-      const hasScrollbarX = window.innerWidth - document.documentElement.clientWidth;
-      // 8px de respiro para nao colar nas bordas.
-      setFlipY((prev) => {
-        const next = rect.height + 8 > spaceBelow;
-        return prev === next ? prev : next;
-      });
-      setFlipX((prev) => {
-        const next = rect.width + 8 > spaceRight - hasScrollbarX;
-        return prev === next ? prev : next;
-      });
-    };
-
-    measure();
-    // Reavalia quando o proprio popover muda de tamanho (ex.: lista carregada).
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    window.addEventListener("resize", measure);
-    window.addEventListener("scroll", measure, true);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-      window.removeEventListener("scroll", measure, true);
-    };
-  }, []);
-
-  return {
-    ref,
-    /** Classe de posicionamento vertical (abre para baixo ou flipa para cima). */
-    yClass: flipY ? "bottom-full mb-1" : "top-full mt-1",
-    /** Classe de posicionamento horizontal (alinhado � esquerda ou flipa � direita). */
-    xClass: flipX ? "right-0" : "left-0",
-    /** Classe combinada pronta para uso no `className` do popover. */
-    className: `${flipY ? "bottom-full mb-1" : "top-full mt-1"} ${
-      flipX ? "right-0" : "left-0"
-    }`,
-  };
-}
-
-/**
- * Posiciona um submenu popover **ao lado** (� direita) do seu gatilho, no estilo
- * Notion dos submenus do cabe�alho de propriedade. Se n�o houver espa�o � direita
- * (coluna pr�xima � borda direita da tela), o submenu "flipa" para a esquerda.
- *
- * O submenu deve ter `position: absolute`; o hook devolve a classe
- * `left-full ml-1 top-0` (� direita) ou `right-full mr-1 top-0` (� esquerda) e o
- * ref que deve ser aplicado ao elemento.
- */
-function useFlipSide<T extends HTMLElement>() {
-  const ref = useRef<T | null>(null);
-  const [flipLeft, setFlipLeft] = useState(false);
-
-  useLayoutEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-
-    const measure = () => {
-      const parent = element.parentElement;
-      if (!parent) return;
-      // Posi��o da �ncora (container `relative` do gatilho) na viewport, mais a
-      // largura de layout do submenu � est�vel mesmo antes do posicionamento.
-      const anchorRect = parent.getBoundingClientRect();
-      const spaceRight = window.innerWidth - anchorRect.right;
-      const width = element.offsetWidth;
-      // 8px de respiro para n�o colar na borda direita.
-      setFlipLeft((prev) => {
-        const next = width + 8 > spaceRight;
-        return prev === next ? prev : next;
-      });
-    };
-
-    measure();
-    const observer = new ResizeObserver(measure);
-    observer.observe(element);
-    window.addEventListener("resize", measure);
-    window.addEventListener("scroll", measure, true);
-    return () => {
-      observer.disconnect();
-      window.removeEventListener("resize", measure);
-      window.removeEventListener("scroll", measure, true);
-    };
-  }, []);
-
-  return {
-    ref,
-    className: flipLeft ? "right-full mr-1 top-0" : "left-full ml-1 top-0",
-  };
-}
-
-/** Op��es de frequ�ncia da recorr�ncia (estilo RRULE). */
-const RECURRENCE_FREQUENCIES: {
-  value: RecurrenceFrequency;
-  label: string;
-  noun: string;
-}[] = [
-  { value: "daily", label: "Diariamente", noun: "dia" },
-  { value: "weekly", label: "Semanalmente", noun: "semana" },
-  { value: "monthly", label: "Mensalmente", noun: "m�s" },
-  { value: "yearly", label: "Anualmente", noun: "ano" },
-];
-
-/** Op��es de t�rmino da recorr�ncia. */
-const RECURRENCE_ENDS: { value: RecurrenceEnd; label: string }[] = [
-  { value: "never", label: "Nunca" },
-  { value: "on", label: "Em uma data" },
-  { value: "after", label: "Ap�s" },
-];
-
-/** Recorr�ncia padr�o de um novo modelo (sem recorr�ncia ativa). */
-function emptyRecurrence(): Recurrence {
-  return {
-    frequency: "weekly",
-    interval: 1,
-    weekdays: [],
-    end: "never",
-    endDate: "",
-    endCount: 10,
-    time: null,
-    startDate: null,
-    lastGenerated: null,
-  };
-}
-
-/** Descreve uma recorr�ncia em texto leg�vel (ex.: "a cada 2 semanas"). */
-function describeRecurrence(rec: Recurrence): string {
-  const freq =
-    RECURRENCE_FREQUENCIES.find((f) => f.value === rec.frequency) ??
-    RECURRENCE_FREQUENCIES[1];
-  const interval = Math.max(1, Math.floor(rec.interval) || 1);
-  const noun = interval === 1 ? freq.noun : `${freq.noun}s`;
-  let text =
-    interval === 1 ? `A ${freq.label.toLowerCase()}` : `A cada ${interval} ${noun}`;
-  if (rec.frequency === "weekly" && rec.weekdays.length > 0) {
-    const weekdays = [...rec.weekdays]
-      .sort((a, b) => a - b)
-      .map((d) => WEEKDAY_LABELS[d])
-      .join(", ");
-    text += ` (${weekdays})`;
+function gapPositionBetween(prev: DbRow | null, next: DbRow | null): number | null {
+  const p = typeof prev?.position === "number" ? prev.position : null;
+  const n = typeof next?.position === "number" ? next.position : null;
+  if (p !== null && n !== null) {
+    if (n - p < 2) return null;
+    return Math.floor((p + n) / 2);
   }
-  if (rec.end === "on" && rec.endDate) text += ` at� ${rec.endDate}`;
-  else if (rec.end === "after" && rec.endCount) text += `, ${rec.endCount}x`;
-  if (rec.time) text += ` �s ${rec.time}`;
-  return text;
+  if (p !== null) return p + 1000;
+  if (n !== null) return n - 1000;
+  return 1000;
 }
 
 /**
- * Monta a se��o HTML de recorr�ncia (descri��o + pr�ximas datas) para anexar ao
- * conte�do da p�gina ao aplicar um modelo. Retorna string vazia se n�o houver
- * recorr�ncia ou datas geradas.
+ * Formata o agregado calculado de uma coluna numérica para o rodapé (pt-BR):
+ * contagens com separador de milhar, porcentagens com "%" e as demais funções
+ * conforme o formato da própria coluna. `null`/vazio → "—".
  */
-function recurrenceHtmlSection(rec: Recurrence, fromISO: string): string {
-  const dates = recurrenceOccurrences(rec, fromISO, 12);
-  const items = dates.map((d) => `<li>${formatRecurrenceDate(d)}</li>`).join("");
-  return (
-    `<h3>Recorr�ncia</h3>` +
-    `<p><strong>${describeRecurrence(rec)}</strong></p>` +
-    (items ? `<p>Pr�ximas datas:</p><ul>${items}</ul>` : "")
-  );
-}
-
-/** Formata uma data ISO em "dd/mm/aaaa". */
-function formatRecurrenceDate(key: string): string {
-  const [y, m, d] = key.split("-");
-  if (!y || !m || !d) return key;
-  return `${d}/${m}/${y}`;
-}
-
-/**
- * Monta o HTML aplicado � p�gina do item ao usar um modelo: o conte�do do
- * modelo (convertido para HTML) seguido da se��o de recorr�ncia, quando houver.
- */
-function templateContentHtml(tpl: PageTemplate): string {
-  const base = ensureHtml(tpl.content);
-  if (!tpl.recurrence) return base;
-  const todayISO = (() => {
-    const d = new Date();
-    const mm = String(d.getMonth() + 1).padStart(2, "0");
-    const dd = String(d.getDate()).padStart(2, "0");
-    return `${d.getFullYear()}-${mm}-${dd}`;
-  })();
-  const section = recurrenceHtmlSection(tpl.recurrence, todayISO);
-  return [base, section].filter(Boolean).join("");
-}
-
-const STATUS_OPTIONS: SelectOption[] = [
-  // N�o iniciado (cinza) ? Em andamento (azul) ? Conclu�do (verde)
-  { id: "todo", label: "N�o iniciado", color: "bg-slate-500/15 text-slate-700 dark:text-slate-300", category: "todo" },
-  { id: "doing", label: "Em andamento", color: "bg-blue-500/15 text-blue-700 dark:text-blue-300", category: "doing" },
-  { id: "done", label: "Conclu�do", color: "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300", category: "done" },
-];
-
-/**
- * Categorias de status (estilo Notion), na ordem exibida no editor: as op��es
- * de uma propriedade `status` s�o agrupadas sob cada um destes t�tulos, com um
- * bot�o "+" para adicionar uma nova op��o j� na categoria correspondente.
- */
-const STATUS_CATEGORIES: { key: StatusCategory; label: string }[] = [
-  { key: "todo", label: "A fazer" },
-  { key: "doing", label: "Em andamento" },
-  { key: "done", label: "Conclu�dos" },
-];
-
-const TAG_OPTIONS: SelectOption[] = [
-  { id: "design", label: "Design", color: "bg-purple-500/15 text-purple-700 dark:text-purple-300" },
-  { id: "dev", label: "Dev", color: "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300" },
-  { id: "marketing", label: "Marketing", color: "bg-orange-500/15 text-orange-700 dark:text-orange-300" },
-  { id: "pessoal", label: "Pessoal", color: "bg-pink-500/15 text-pink-700 dark:text-pink-300" },
-];
-
-/** Converte "yyyy-MM-dd" em "dd MMM" curto (pt-BR), sem depender de timezone. */
-function formatShortDate(key: string): string {
-  const [y, m, d] = key.split("-").map(Number);
-  if (!y || !m || !d) return key;
-  const months = [
-    "jan", "fev", "mar", "abr", "mai", "jun",
-    "jul", "ago", "set", "out", "nov", "dez",
-  ];
-  return `${d} ${months[m - 1]}`;
-}
-
-/** Gera um id �nico para colunas criadas no cliente (chave em `DbRow.values`). */
-function newColumnId(): string {
-  return `col_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
-/** Busca a op��o (status/tag) pelo id, para exibir chips em modo leitura. */
-function tagById(id: string): SelectOption | undefined {
-  return TAG_OPTIONS.find((t) => t.id === id);
-}
-
-/** Paleta de cores dispon�veis para as op��es (chips estilo Notion). */
-const OPTION_COLORS: string[] = [
-  "bg-slate-500/15 text-slate-700 dark:text-slate-300",
-  "bg-blue-500/15 text-blue-700 dark:text-blue-300",
-  "bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
-  "bg-red-500/15 text-red-700 dark:text-red-300",
-  "bg-purple-500/15 text-purple-700 dark:text-purple-300",
-  "bg-cyan-500/15 text-cyan-700 dark:text-cyan-300",
-  "bg-orange-500/15 text-orange-700 dark:text-orange-300",
-  "bg-pink-500/15 text-pink-700 dark:text-pink-300",
-  "bg-yellow-500/15 text-yellow-700 dark:text-yellow-300",
-  "bg-teal-500/15 text-teal-700 dark:text-teal-300",
-];
-
-/** Gera um id �nico para uma op��o criada no cliente. */
-function newOptionId(): string {
-  return `opt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
-/**
- * Op��es dispon�veis para uma coluna do tipo select/multi_select.
- * Colunas `select`/`multi_select` criadas pelo usu�rio come�am **vazias**
- * (sem op��es) at� que o usu�rio as cadastre. Apenas `status` (categorias
- * fixas) e a coluna legada `tags` t�m uma lista base pr�-definida.
- */
-function optionsForColumn(column: Column): SelectOption[] {
-  if (
-    column.type !== "select" &&
-    column.type !== "status" &&
-    column.type !== "multi_select"
-  )
-    return [];
-  // Op��es configuradas na coluna t�m prioridade (colunas customizadas).
-  if (column.options && column.options.length > 0) return column.options;
-  // Colunas de status usam as categorias fixas (A fazer/Em andamento/Conclu�do).
-  if (column.id === "status" || column.type === "status") return STATUS_OPTIONS;
-  // Coluna legada de tags reutiliza a lista base por id.
-  if (column.id === "tags") return TAG_OPTIONS;
-  // Propriedades de sele��o/sele��o m�ltipla come�am vazias por padr�o.
-  return [];
-}
-
-/**
- * Op��es que podem ser editadas na tela "Editar propriedades".
- * Para colunas select/multi_select sempre devolve uma lista (mesmo que base),
- * de modo que o usu�rio possa adicionar/renomear/excluir a partir dela.
- */
-function editableOptionsForColumn(column: Column): SelectOption[] {
-  if (
-    column.type !== "select" &&
-    column.type !== "status" &&
-    column.type !== "multi_select"
-  )
-    return [];
-  return optionsForColumn(column);
-}
-
-/** Valor de uma c�lula (nunca undefined � usa "" como padr�o). */
-function cellOf(row: DbRow, columnId: string): CellValue {
-  return row.values[columnId] ?? "";
-}
-
-/**
- * Permite que **toda a �rea** de um `<td>` responda ao clique � e n�o apenas o
- * conte�do interno (input/bot�o/label) �, executando a a��o principal da c�lula
- * mesmo quando o clique cai no padding/�rea vazia do `td`.
- *
- * Ignora cliques que j� est�o sobre controles interativos, para n�o duplicar a
- * a��o de quem j� trata o evento (ex.: o pr�prio input/bot�o/chip).
- */
-function cellAreaClick(
-  event: { target: EventTarget | null; currentTarget: HTMLTableCellElement },
-  action: () => void,
-) {
-  const target = event.target as HTMLElement | null;
-  if (
-    target?.closest(
-      "input, button, label, a, textarea, select, [data-cell-menu], [contenteditable='true']",
-    )
-  ) {
-    return;
+function formatCalcValue(value: CellValue | null, column: Column): string {
+  const fn = column.calculate;
+  if (!fn || value === null || value === "") return "—";
+  const n = parseNumberValue(value);
+  if (n === null) return "—";
+  switch (fn) {
+    case "count_all":
+    case "count_filled":
+    case "count_empty":
+    case "count_unique":
+      return n.toLocaleString("pt-BR");
+    case "percent_filled":
+    case "percent_empty":
+      return `${formatNumberByColumn(n, null)}%`;
+    default:
+      return formatNumberByColumn(n, column);
   }
-  action();
 }
 
-/**
- * Colunas que podem agrupar um quadro Kanban (estilo Notion): apenas
- * sele��o/status, cujas op��es viram as colunas do quadro. `multi_select`
- * fica de fora por n�o ter um �nico valor por linha.
- */
-function kanbanGroupColumns(columns: Column[]): Column[] {
-  return columns.filter((c) => c.type === "select" || c.type === "status");
-}
-
-/**
- * Escolhe a coluna padr�o de agrupamento do Kanban: prefere status, depois
- * sele��o; cai para a primeira op��o dispon�vel. Devolve `null` se n�o houver
- * nenhuma coluna agrup�vel.
- */
-function defaultKanbanColumnId(columns: Column[]): string | null {
-  const candidates = kanbanGroupColumns(columns);
-  if (candidates.length === 0) return null;
-  const status = candidates.find((c) => c.type === "status");
-  return (status ?? candidates[0]).id;
-}
-
-/** Formato de gr�fico suportado pela visualiza��o "Gr�fico". */
-type ChartKind = "bar" | "line" | "area" | "pie";
-
-/** Como agrega��o dos itens por categoria (contagem ou fun��es num�ricas). */
-type ChartAggregate = "count" | "sum" | "avg";
-
-/** Valor usado no eixo de agrega��o: uma coluna num�rica ou a contagem. */
-const CHART_COUNT = "__count__";
-
-/** Configura��o da visualiza��o "Gr�fico" persistida por database. */
-interface ChartConfig {
-  /** Formato do gr�fico (barras, linha, �rea ou pizza). */
-  kind: ChartKind;
-  /** Id da coluna usada nas categorias (eixo X / fatias). `null` = sem dados. */
-  groupColumnId: string | null;
-  /** Coluna num�rica agregada por categoria, ou `CHART_COUNT` para contar itens. */
-  valueColumnId: string;
-  /** Opera��o aplicada aos valores de cada categoria. */
-  aggregate: ChartAggregate;
-}
-
-/** Metadados (�cone/r�tulo) de cada formato de gr�fico. */
-const CHART_KINDS: { kind: ChartKind; label: string; icon: typeof ChartColumn }[] = [
-  { kind: "bar", label: "Barras", icon: ChartColumn },
-  { kind: "line", label: "Linha", icon: ChartLine },
-  { kind: "area", label: "�rea", icon: ChartArea },
-  { kind: "pie", label: "Pizza", icon: ChartPie },
+/** Operadores de filtro exibidos no popover do chip. */
+const FILTER_OPERATORS: { value: FilterOperator; label: string }[] = [
+  { value: "is", label: "é" },
+  { value: "is_not", label: "não é" },
+  { value: "is_empty", label: "está vazio" },
+  { value: "is_not_empty", label: "não está vazio" },
 ];
 
-/** R�tulo das agrega��es dispon�veis (contagem/soma/m�dia). */
-const CHART_AGGREGATES: { value: ChartAggregate; label: string }[] = [
-  { value: "count", label: "Contagem" },
-  { value: "sum", label: "Soma" },
-  { value: "avg", label: "M�dia" },
-];
-
-/** Paleta fixa (hex) para as s�ries/fatias do gr�fico. */
-const CHART_COLORS: string[] = [
-  "#6366f1", // indigo
-  "#06b6d4", // cyan
-  "#10b981", // emerald
-  "#f59e0b", // amber
-  "#ef4444", // red
-  "#a855f7", // purple
-  "#ec4899", // pink
-  "#14b8a6", // teal
-  "#f97316", // orange
-  "#84cc16", // lime
-];
+/** Referência vazia estável dos operadores (evita recriar a cada render). */
+const EMPTY_FILTER_OPERATORS: Record<string, string> = {};
 
 /**
- * Colunas que podem servir de categoria no gr�fico: sele��o/status (chips),
- * caixa de sele��o e data. Multi-select fica de fora por n�o ter valor �nico.
+ * Operadores de filtro por tipo de coluna. Em `multi_select` o valor é uma
+ * lista, então "é"/"não é" viram **"contém"/"não contém"** (mesma semântica do
+ * `is`/`is_not` no servidor: `@>` no array). Em `relation` os operadores são
+ * resolvidos no servidor contra `relation_links` (`relation_*`). `rollup` é
+ * calculado e **não** é filtrável (lista vazia).
  */
-function chartGroupColumns(columns: Column[]): Column[] {
-  return columns.filter(
-    (c) =>
-      !c.hidden &&
-      (c.type === "select" ||
-        c.type === "status" ||
-        c.type === "checkbox" ||
-        c.type === "date"),
-  );
-}
-
-/** Colunas num�ricas que podem ser agregadas (soma/m�dia) no gr�fico. */
-function chartNumberColumns(columns: Column[]): Column[] {
-  return columns.filter((c) => !c.hidden && c.type === "number");
-}
-
-/**
- * Escolhe colunas padr�o para o gr�fico: prefere uma coluna de status/sele��o
- * para categorias e a primeira coluna num�rica para o valor (sen�o contagem).
- */
-function defaultChartConfig(columns: Column[]): ChartConfig {
-  const groupColumns = chartGroupColumns(columns);
-  const numberColumns = chartNumberColumns(columns);
-  return {
-    kind: "bar",
-    groupColumnId: groupColumns[0]?.id ?? null,
-    valueColumnId: numberColumns[0]?.id ?? CHART_COUNT,
-    aggregate: numberColumns.length > 0 ? "sum" : "count",
-  };
-}
-
-/** Valida, de forma defensiva, a configura��o do gr�fico lida do storage. */
-function isChartConfig(value: unknown): value is ChartConfig {
-  if (typeof value !== "object" || value === null) return false;
-  const c = value as ChartConfig;
-  return (
-    (c.kind === "bar" ||
-      c.kind === "line" ||
-      c.kind === "area" ||
-      c.kind === "pie") &&
-    (typeof c.groupColumnId === "string" || c.groupColumnId === null) &&
-    typeof c.valueColumnId === "string" &&
-    (c.aggregate === "count" || c.aggregate === "sum" || c.aggregate === "avg")
-  );
-}
-
-/** R�tulo leg�vel de uma categoria (op��o, data ou caixa de sele��o). */
-function chartCategoryLabel(
-  row: DbRow,
+function filterOperatorsFor(
   column: Column,
-  options: SelectOption[],
-): string {
-  const value = cellOf(row, column.id);
+): { value: FilterOperator; label: string }[] {
+  if (column.type === "relation") {
+    return [
+      { value: "relation_is", label: "contém" },
+      { value: "relation_is_not", label: "não contém" },
+      { value: "relation_is_empty", label: "está vazio" },
+      { value: "relation_is_not_empty", label: "não está vazio" },
+    ];
+  }
+  if (column.type === "multi_select") {
+    return [
+      { value: "is", label: "contém" },
+      { value: "is_not", label: "não contém" },
+      { value: "is_empty", label: "está vazio" },
+      { value: "is_not_empty", label: "não está vazio" },
+    ];
+  }
   if (column.type === "checkbox") {
-    const checked = value === "true" || value === "1";
-    return checked ? "Conclu�do" : "N�o marcado";
+    // Caixa de seleção: só "é"/"não é" — o valor é Marcadas/Desmarcadas.
+    return [
+      { value: "is", label: "é" },
+      { value: "is_not", label: "não é" },
+    ];
   }
-  if (column.type === "select" || column.type === "status") {
-    const raw = Array.isArray(value) ? value[0] : value;
-    const option = options.find((o) => o.id === raw);
-    return option ? option.label : "Sem valor";
-  }
-  const text = Array.isArray(value) ? value.join(", ") : value;
-  return text.trim() || "Sem valor";
-}
-
-/** Converte o valor de uma c�lula em n�mero (vazio/n�o num�rico ? null). */
-function cellNumber(value: CellValue): number | null {
-  if (Array.isArray(value)) return null;
-  const text = String(value ?? "").trim();
-  if (!text) return null;
-  const n = Number(text.replace(/\s/g, "").replace(",", "."));
-  return Number.isFinite(n) ? n : null;
-}
-
-/** Uma linha j� agregada, pronta para o gr�fico (`{ label, value }`). */
-interface ChartPoint {
-  label: string;
-  value: number;
+  if (column.type === "rollup") return [];
+  return FILTER_OPERATORS;
 }
 
 /**
- * Agrupa as linhas por categoria e calcula o valor de cada grupo conforme a
- * configura��o (contagem, soma ou m�dia). Categorias sem valor num�rico s�o
- * ignoradas nas somas/m�dias; em contagem todas contam.
+ * Converte o operador genérico de uma relação ("is"/"is_not"/...) para o
+ * operador `relation_*` (resolve contra `relation_links`). Necessário para
+ * filtros salvos em visualizações antigas (antes dos operadores de relação).
  */
-function buildChartData(
-  rows: DbRow[],
-  column: Column,
-  config: ChartConfig,
-  valueColumn: Column | null,
-  options: SelectOption[],
-): ChartPoint[] {
-  const buckets = new Map<
-    string,
-    { label: string; count: number; sum: number; numeric: number }
-  >();
-
-  for (const row of rows) {
-    const label = chartCategoryLabel(row, column, options);
-    let bucket = buckets.get(label);
-    if (!bucket) {
-      bucket = { label, count: 0, sum: 0, numeric: 0 };
-      buckets.set(label, bucket);
-    }
-    bucket.count += 1;
-    if (config.aggregate !== "count" && valueColumn) {
-      const n = cellNumber(cellOf(row, valueColumn.id));
-      if (n !== null) {
-        bucket.sum += n;
-        bucket.numeric += 1;
-      }
-    }
+function relationFilterOperator(operator: FilterOperator): FilterOperator {
+  switch (operator) {
+    case "is":
+      return "relation_is";
+    case "is_not":
+      return "relation_is_not";
+    case "is_empty":
+      return "relation_is_empty";
+    case "is_not_empty":
+      return "relation_is_not_empty";
+    default:
+      return operator;
   }
-
-  const points: ChartPoint[] = [];
-  for (const bucket of buckets.values()) {
-    let value: number;
-    if (config.aggregate === "count") value = bucket.count;
-    else if (config.aggregate === "sum") value = bucket.sum;
-    else value = bucket.numeric > 0 ? bucket.sum / bucket.numeric : 0;
-    points.push({ label: bucket.label, value });
-  }
-  return points;
-}
-
-/** Tipo de visualiza��o de um database (estilo "view" do Notion). */
-type DbViewType = "table" | "kanban" | "chart";
-
-/** Uma visualiza��o criada pelo usu�rio sobre o mesmo database. */
-interface DbView {
-  id: string;
-  type: DbViewType;
-  name: string;
-}
-
-/** Gera um id �nico para uma nova visualiza��o criada no cliente. */
-function newViewId(): string {
-  return `view_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
-}
-
-/** �cone e r�tulo padr�o de cada tipo de visualiza��o. */
-const VIEW_TYPES: { type: DbViewType; label: string; icon: typeof Table2 }[] = [
-  { type: "table", label: "Tabela", icon: Table2 },
-  { type: "kanban", label: "Kanban", icon: SquareKanban },
-  { type: "chart", label: "Gr�fico", icon: ChartColumn },
-];
-
-/** Metadados (�cone/r�tulo) de um tipo de visualiza��o. */
-function viewTypeMeta(type: DbViewType) {
-  return VIEW_TYPES.find((v) => v.type === type) ?? VIEW_TYPES[0];
 }
 
 /**
- * Cria a lista inicial de visualiza��es de um database: uma tabela por padr�o,
- * al�m de um Kanban se j� existir alguma coluna agrup�vel (select/status).
+ * Normaliza o filtro de uma propriedade. É compatível com o formato antigo da
+ * caixa de seleção ("checked"/"unchecked") gravado nas visualizações salvas.
  */
-function initialViews(columns: Column[]): DbView[] {
-  const views: DbView[] = [{ id: newViewId(), type: "table", name: "Tabela" }];
-  if (kanbanGroupColumns(columns).length > 0) {
-    views.push({ id: newViewId(), type: "kanban", name: "Kanban" });
-  }
-  return views;
-}
-
-/** Estado persistido das visualiza��es de um database. */
-interface PersistedViews {
-  views: DbView[];
-  activeViewId: string;
-  kanbanColumnId: string | null;
-  /** Configura��o da visualiza��o "Gr�fico" (opcional; usa padr�o quando ausente). */
-  chart?: ChartConfig;
-}
-
-/** Chave de localStorage onde as visualiza��es de um database s�o guardadas. */
-function viewsStorageKey(databaseId: string): string {
-  return `calendar:dbViews:${databaseId}`;
-}
-
-/** Valida, de forma defensiva, se um valor lido � uma visualiza��o. */
-function isDbView(value: unknown): value is DbView {
-  if (typeof value !== "object" || value === null) return false;
-  const v = value as DbView;
-  return (
-    typeof v.id === "string" &&
-    (v.type === "table" || v.type === "kanban" || v.type === "chart") &&
-    typeof v.name === "string"
-  );
-}
-
-/**
- * L� as visualiza��es salvas de um database em localStorage. Devolve `null`
- * quando n�o h� nada v�lido salvo (a� o chamador usa `initialViews`).
- */
-function loadPersistedViews(databaseId: string): PersistedViews | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const raw = window.localStorage.getItem(viewsStorageKey(databaseId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as unknown;
-    if (typeof parsed !== "object" || parsed === null) return null;
-    const data = parsed as Partial<PersistedViews>;
-    if (!Array.isArray(data.views) || data.views.length === 0) return null;
-    const views = data.views.filter(isDbView);
-    if (views.length === 0) return null;
-    const active =
-      typeof data.activeViewId === "string" &&
-      views.some((v) => v.id === data.activeViewId)
-        ? data.activeViewId
-        : views[0].id;
-    const kanbanColumnId =
-      typeof data.kanbanColumnId === "string" ? data.kanbanColumnId : null;
-    const chart = isChartConfig(data.chart) ? data.chart : undefined;
-    return { views, activeViewId: active, kanbanColumnId, chart };
-  } catch {
-    return null;
-  }
-}
-
-/** Persiste as visualiza��es de um database em localStorage (best-effort). */
-function savePersistedViews(databaseId: string, data: PersistedViews): void {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(viewsStorageKey(databaseId), JSON.stringify(data));
-  } catch {
-    /* ignora falhas de quota/privacidade � a UI segue com o estado em mem�ria */
-  }
-}
-
-
-/** Chip colorido usado para status e tags. */
-function Chip({ option, onRemove }: { option: SelectOption; onRemove?: () => void }) {
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
-        option.color,
-      )}
-    >
-      {option.label}
-      {onRemove ? (
-        <button type="button" onClick={onRemove} aria-label={`Remover ${option.label}`}>
-          <X className="h-3 w-3" />
-        </button>
-      ) : null}
-    </span>
-  );
-}
-
-interface RowPageContentProps {
-  row: DbRow;
-  columns: Column[];
-  /** Fecha o modal da p�gina. */
-  onClose: () => void;
-  /** Persiste o conte�do da p�gina de uma linha. */
-  onChangeContent: (rowId: string, content: string) => void;
-}
-
-/**
- * Conte�do da "p�gina" de um item (estilo Notion) � usado no modal flutuante.
- *
- * Importante: este componente vive no n�vel de m�dulo (e n�o dentro de
- * `DatabaseTable`) de prop�sito. Componentes definidos no corpo de outro
- * componente ganham uma nova identidade a cada render do pai, o que obriga o
- * React a desmontar/remontar a sub�rvore inteira � destruindo o foco e o cursor
- * do `PageEditor` a cada digita��o (a cada autosave o pai re-renderiza).
- */
-function RowPageContent({
-  row,
-  columns,
-  onClose,
-  onChangeContent,
-}: RowPageContentProps) {
-  const rowTitle = (() => {
-    const first = columns[0];
-    const raw = first ? cellOf(row, first.id) : "";
-    const text = Array.isArray(raw) ? raw.join(", ") : String(raw ?? "");
-    return text.trim() || "Sem t�tulo";
-  })();
-
-  const content = (() => {
-    const raw = row.values[PAGE_CONTENT_KEY];
-    return typeof raw === "string" ? ensureHtml(raw) : "";
-  })();
-
-  return (
-    <>
-      <div className="mb-3 flex items-center gap-2 border-b py-3 pl-[3.75rem] pr-5">
-        <FileText className="h-4 w-4 text-muted-foreground" />
-        <span className="text-base font-semibold">{rowTitle}</span>
-        <button
-          type="button"
-          onClick={onClose}
-          aria-label="Fechar p�gina"
-          className="ml-auto flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <X className="h-4 w-4" />
-        </button>
-      </div>
-
-      <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-5">
-      <div className="flex flex-col divide-y pl-[2.5rem] pr-[2.5rem]">
-        {columns.map((column) => {
-          const raw = cellOf(row, column.id);
-          const isList = Array.isArray(raw);
-          return (
-            <div key={column.id} className="flex items-start gap-2 py-2 text-sm">
-              <span className="w-32 flex-none text-muted-foreground">
-                {column.name}
-              </span>
-              {isList ? (
-                <span className="flex flex-wrap items-center gap-1">
-                  {raw.map((id) => {
-                    const opt =
-                      optionsForColumn(column).find((o) => o.id === id) ??
-                      tagById(id);
-                    return opt ? <Chip key={id} option={opt} /> : null;
-                  })}
-                </span>
-              ) : (
-                <span className="min-w-0 break-words">
-                  {column.type === "date" && raw
-                    ? formatShortDate(String(raw))
-                    : column.type === "checkbox"
-                      ? raw === "true" || raw === "1"
-                        ? <CheckSquare className="h-4 w-4 text-emerald-600" />
-                        : null
-                      : String(raw ?? "")}
-                </span>
-              )}
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="flex flex-col space-y-3">
-        <PageEditor
-          value={content}
-          onChange={(v) => onChangeContent(row.id, v)}
-          placeholder="Clique aqui para come�ar a escrever..."
-          ariaLabel="Conte�do da p�gina"
-        />
-      </div>
-      </div>
-    </>
-  );
-}
-
-
-
-interface KanbanBoardProps {
-  /** Todas as colunas (para escolher as propriedades exibidas no card). */
-  columns: Column[];
-  /** Linhas j� filtradas (busca) que devem aparecer no quadro. */
-  rows: DbRow[];
-  /** Coluna select/status usada para agrupar (null = sem coluna agrup�vel). */
-  groupColumn: Column | null;
-  /** Se existe alguma coluna agrup�vel (select/status). */
-  canGroup: boolean;
-  onOpenRow: (rowId: string) => void;
-  onDeleteRow: (rowId: string) => void;
-  /** Cria um card j� atribu�do a uma op��o de uma coluna (agrupamento). */
-  onAddCard: (columnId: string, value: CellValue) => void;
-  /** Move um card para uma coluna/posi��o, atualizando valor de grupo e ordem. */
-  onMoveCard: (
-    rowId: string,
-    columnId: string,
-    value: CellValue,
-    beforeRowId: string | null,
-  ) => void;
-  /** Renderiza o valor de uma propriedade no rodap� do card (modo leitura). */
-  renderCardProperty: (row: DbRow, column: Column) => React.ReactNode;
-  /** Extrai o t�tulo do card (primeira coluna de texto/pessoa). */
-  cardTitle: (row: DbRow) => string;
-}
-
-/**
- * Quadro Kanban (estilo Notion): as linhas viram cards distribu�dos em colunas
- * conforme o valor de uma coluna select/status ("Agrupar por"). Cada coluna
- * lista seus cards e permite criar um novo j� com aquele valor atribu�do. Os
- * cards podem ser arrastados entre colunas (e reordenados dentro de uma coluna),
- * atualizando o valor de grupo e a ordem; uma linha indica onde o card vai cair.
- */
-function KanbanBoard({
-  columns,
-  rows,
-  groupColumn,
-  canGroup,
-  onOpenRow,
-  onDeleteRow,
-  onAddCard,
-  onMoveCard,
-  renderCardProperty,
-  cardTitle,
-}: KanbanBoardProps) {
-  /** Coluna atualmente real�ada durante um arraste (alvo do drop). */
-  const [dragOverGroupId, setDragOverGroupId] = useState<string | null>(null);
-  /**
-   * Posi��o de inser��o durante o arraste: em qual coluna e antes de qual card
-   * (null = no fim). Usada para desenhar a linha indicadora onde o card vai cair.
-   */
-  const [dropTarget, setDropTarget] = useState<{
-    groupId: string;
-    beforeRowId: string | null;
-  } | null>(null);
-  /** Id do card sendo arrastado (para n�o desenhar a linha sobre ele mesmo). */
-  const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
-  /** Colunas cujas propriedades aparecem no rodap� do card (exceto a de grupo). */
-  const propColumns = useMemo(
-    () =>
-      columns.filter(
-        (c) => !c.hidden && c.id !== groupColumn?.id,
-      ),
-    [columns, groupColumn],
-  );
-
-  if (!canGroup || !groupColumn) {
-    return (
-      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-2 p-10 text-center text-sm text-muted-foreground">
-        <SquareKanban className="h-8 w-8 opacity-60" />
-        <p className="max-w-xs">
-          O quadro Kanban agrupa os itens por uma propriedade de sele��o ou
-          status. Crie uma coluna desses tipos (em �Configura��es da tabela�)
-          para usar esta visualiza��o.
-        </p>
-      </div>
-    );
-  }
-
-  const options = optionsForColumn(groupColumn);
-  // Cada op��o vira uma coluna do quadro; itens sem valor caem em "Sem valor".
-  const groups = [
-    ...options.map((option) => ({
-      id: option.id,
-      option,
-      rows: rows.filter((r) => cellOf(r, groupColumn.id) === option.id),
-    })),
-    {
-      id: "__none__",
-      option: null as SelectOption | null,
-      rows: rows.filter((r) => {
-        const value = cellOf(r, groupColumn.id);
-        return value === "" || (Array.isArray(value) && value.length === 0);
-      }),
-    },
-  ];
-
-  return (
-    <div className="flex h-full min-h-0 items-stretch gap-3 overflow-x-auto p-3">
-      {groups.map((group) => (
-        <div
-          key={group.id}
-          className="flex w-72 flex-none flex-col rounded-lg border bg-muted/20"
-        >
-          {/* Cabe�alho da coluna: chip da op��o + contagem */}
-          <div className="flex items-center gap-2 border-b px-3 py-2">
-            {group.option ? (
-              <Chip option={group.option} />
-            ) : (
-              <span className="text-xs font-medium text-muted-foreground">
-                Sem valor
-              </span>
-            )}
-            <span className="ml-auto rounded-full bg-background px-2 text-xs text-muted-foreground">
-              {group.rows.length}
-            </span>
-          </div>
-
-          {/* Lista de cards (tamb�m � a zona de soltar do arraste) */}
-          <div
-            className={cn(
-              "flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto p-2 transition-colors",
-              dragOverGroupId === group.id && "bg-accent/40",
-            )}
-            onDragOver={(event) => {
-              if (!event.dataTransfer.types.includes("text/plain")) return;
-              event.preventDefault();
-              event.dataTransfer.dropEffect = "move";
-              if (dragOverGroupId !== group.id) setDragOverGroupId(group.id);
-              // Soltar no espa�o vazio da coluna = mover para o fim.
-              setDropTarget({ groupId: group.id, beforeRowId: null });
-            }}
-            onDragLeave={(event) => {
-              // S� limpa quando o ponteiro sai de fato da coluna (n�o ao entrar num filho).
-              if (event.currentTarget.contains(event.relatedTarget as Node | null)) return;
-              setDragOverGroupId((current) => (current === group.id ? null : current));
-              setDropTarget((current) =>
-                current?.groupId === group.id ? null : current,
-              );
-            }}
-            onDrop={(event) => {
-              event.preventDefault();
-              const rowId = event.dataTransfer.getData("text/plain");
-              const target = dropTarget;
-              setDragOverGroupId(null);
-              setDropTarget(null);
-              setDraggingRowId(null);
-              if (!rowId) return;
-              const beforeRowId =
-                target?.groupId === group.id ? target.beforeRowId : null;
-              onMoveCard(
-                rowId,
-                groupColumn.id,
-                group.option ? group.option.id : "",
-                beforeRowId,
-              );
-            }}
-          >
-            {group.rows.map((row) => {
-              const isDragging = draggingRowId === row.id;
-              const showLineBefore =
-                dropTarget?.groupId === group.id &&
-                dropTarget.beforeRowId === row.id &&
-                !isDragging;
-              return (
-                <Fragment key={row.id}>
-                  {/* Linha indicadora da posi��o de inser��o */}
-                  {showLineBefore ? (
-                    <div className="h-0.5 flex-none rounded-full bg-primary" />
-                  ) : null}
-                  <div
-                    draggable
-                    onDragStart={(event) => {
-                      event.dataTransfer.setData("text/plain", row.id);
-                      event.dataTransfer.effectAllowed = "move";
-                      setDraggingRowId(row.id);
-                    }}
-                    onDragEnd={() => {
-                      setDraggingRowId(null);
-                      setDropTarget(null);
-                      setDragOverGroupId(null);
-                    }}
-                    // Determina soltar acima ou abaixo deste card pela metade.
-                    onDragOver={(event) => {
-                      if (!event.dataTransfer.types.includes("text/plain")) return;
-                      event.preventDefault();
-                      event.stopPropagation();
-                      event.dataTransfer.dropEffect = "move";
-                      setDragOverGroupId(group.id);
-                      const rect = event.currentTarget.getBoundingClientRect();
-                      const after = event.clientY - rect.top > rect.height / 2;
-                      const nextBefore = after
-                        ? (group.rows[group.rows.indexOf(row) + 1]?.id ?? null)
-                        : row.id;
-                      if (
-                        dropTarget?.beforeRowId !== nextBefore ||
-                        dropTarget.groupId !== group.id
-                      ) {
-                        setDropTarget({ groupId: group.id, beforeRowId: nextBefore });
-                      }
-                    }}
-                    className={cn(
-                      "group/card cursor-grab rounded-md border bg-card p-2.5 shadow-sm transition-shadow hover:shadow-md active:cursor-grabbing",
-                      isDragging && "opacity-40",
-                    )}
-                  >
-                    <div className="flex items-start gap-1">
-                      <button
-                        type="button"
-                        onClick={() => onOpenRow(row.id)}
-                        className="min-w-0 flex-1 text-left text-sm font-medium hover:underline"
-                      >
-                        <span className="line-clamp-2">{cardTitle(row)}</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onDeleteRow(row.id)}
-                        aria-label="Excluir item"
-                        className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/card:opacity-100"
-                      >
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-
-                    {/* Propriedades (chips/data/texto) das demais colunas */}
-                    {propColumns.length > 0 ? (
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                        {propColumns.map((column) => (
-                          <Fragment key={column.id}>
-                            {renderCardProperty(row, column)}
-                          </Fragment>
-                        ))}
-                      </div>
-                    ) : null}
-                  </div>
-                </Fragment>
-              );
-            })}
-
-            {/* Linha indicadora no fim da coluna */}
-            {dropTarget?.groupId === group.id && dropTarget.beforeRowId === null ? (
-              <div className="h-0.5 flex-none rounded-full bg-primary" />
-            ) : null}
-
-            {/* Criar novo card j� com o valor desta coluna */}
-            <button
-              type="button"
-              onClick={() =>
-                onAddCard(groupColumn.id, group.option ? group.option.id : "")
-              }
-              className="flex items-center gap-1 rounded-md px-2 py-1.5 text-xs text-muted-foreground hover:bg-accent"
-            >
-              <Plus className="h-3.5 w-3.5" />
-              Novo
-            </button>
-          </div>
-        </div>
-      ))}
-    </div>
-  );
-}
-
-interface ChartViewProps {
-  columns: Column[];
-  rows: DbRow[];
-  config: ChartConfig;
-  /** Atualiza (e persiste) a configura��o do gr�fico. */
-  onConfigChange: (patch: Partial<ChartConfig>) => void;
-}
-
-/**
- * Visualiza��o "Gr�fico" (estilo Notion): agrega as linhas por uma propriedade
- * de categoria e desenha barras, linha, �rea ou pizza. A configura��o (formato,
- * eixo de categoria, valor e agrega��o) � escolhida na barra do topo e
- * persistida no pai. Usa Recharts (SVG responsivo) para a renderiza��o.
- */
-function ChartView({ columns, rows, config, onConfigChange }: ChartViewProps) {
-  /** Colunas que podem servir de categoria (select/status/checkbox/data). */
-  const groupColumns = useMemo(() => chartGroupColumns(columns), [columns]);
-  /** Colunas num�ricas dispon�veis para somar/m�dia. */
-  const numberColumns = useMemo(() => chartNumberColumns(columns), [columns]);
-
-  /** Coluna de categoria efetiva (fallback para a primeira dispon�vel). */
-  const groupColumn = useMemo(() => {
-    const current = groupColumns.find((c) => c.id === config.groupColumnId);
-    return current ?? groupColumns[0] ?? null;
-  }, [groupColumns, config.groupColumnId]);
-
-  /** Coluna de valor efetiva: num�rica escolhida ou `null` (contagem). */
-  const valueColumn = useMemo(() => {
-    if (config.valueColumnId === CHART_COUNT) return null;
-    return numberColumns.find((c) => c.id === config.valueColumnId) ?? null;
-  }, [numberColumns, config.valueColumnId]);
-
-  /** Dados agregados prontos para o Recharts. */
-  const data = useMemo(() => {
-    if (!groupColumn) return [];
-    const options = optionsForColumn(groupColumn);
-    return buildChartData(rows, groupColumn, config, valueColumn, options);
-  }, [rows, groupColumn, config, valueColumn]);
-
-  // Sem coluna de categoria: nada a plotar � orienta o usu�rio a criar uma.
-  if (!groupColumn) {
-    return (
-      <div className="flex h-full min-h-0 flex-col items-center justify-center gap-2 p-10 text-center text-sm text-muted-foreground">
-        <ChartColumn className="h-8 w-8 opacity-60" />
-        <p className="max-w-sm">
-          O gr�fico agrupa os itens por uma propriedade de sele��o, status, data
-          ou caixa de sele��o. Crie uma coluna desses tipos (em �Configura��es da
-          tabela�) para usar esta visualiza��o.
-        </p>
-      </div>
-    );
-  }
-
-  return (
-    <div className="flex h-full min-h-0 flex-col gap-4 p-4">
-      <ChartConfigBar
-        config={config}
-        groupColumns={groupColumns}
-        numberColumns={numberColumns}
-        groupColumn={groupColumn}
-        valueColumn={valueColumn}
-        onConfigChange={onConfigChange}
-      />
-      <div className="min-h-0 flex-1">
-        {data.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-            Nenhum dado para exibir. Adicione itens � tabela para ver o gr�fico.
-          </div>
-        ) : (
-          <ChartRenderer kind={config.kind} data={data} valueColumn={valueColumn} />
-        )}
-      </div>
-    </div>
-  );
-}
-
-interface ChartConfigBarProps {
-  config: ChartConfig;
-  groupColumns: Column[];
-  numberColumns: Column[];
-  groupColumn: Column;
-  valueColumn: Column | null;
-  onConfigChange: (patch: Partial<ChartConfig>) => void;
-}
-
-/** Barra de controles do gr�fico: formato, categoria, valor e agrega��o. */
-function ChartConfigBar({
-  config,
-  groupColumns,
-  numberColumns,
-  groupColumn,
-  valueColumn,
-  onConfigChange,
-}: ChartConfigBarProps) {
-  return (
-    <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-      {/* Formato do gr�fico */}
-      <div className="flex items-center gap-0.5 rounded-md border bg-muted/30 p-0.5">
-        {CHART_KINDS.map((option) => {
-          const Icon = option.icon;
-          const isActive = option.kind === config.kind;
-          return (
-            <button
-              key={option.kind}
-              type="button"
-              onClick={() => onConfigChange({ kind: option.kind })}
-              aria-pressed={isActive}
-              title={option.label}
-              className={cn(
-                "flex items-center gap-1.5 rounded px-2 py-1 transition-colors",
-                isActive
-                  ? "bg-background text-foreground shadow-sm"
-                  : "hover:bg-accent hover:text-foreground",
-              )}
-            >
-              <Icon className="h-3.5 w-3.5" />
-              {option.label}
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Categoria (eixo X / fatias) */}
-      <label className="flex items-center gap-1.5">
-        Categoria
-        <select
-          value={groupColumn.id}
-          onChange={(e) => onConfigChange({ groupColumnId: e.target.value })}
-          className="rounded border bg-background px-1.5 py-1 text-xs text-foreground outline-none"
-          aria-label="Coluna de categoria do gr�fico"
-        >
-          {groupColumns.map((column) => (
-            <option key={column.id} value={column.id}>
-              {column.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {/* Valor (coluna num�rica ou contagem) */}
-      <label className="flex items-center gap-1.5">
-        Valor
-        <select
-          value={config.valueColumnId}
-          onChange={(e) => onConfigChange({ valueColumnId: e.target.value })}
-          className="rounded border bg-background px-1.5 py-1 text-xs text-foreground outline-none"
-          aria-label="Coluna de valor do gr�fico"
-        >
-          <option value={CHART_COUNT}>Contagem</option>
-          {numberColumns.map((column) => (
-            <option key={column.id} value={column.id}>
-              {column.name}
-            </option>
-          ))}
-        </select>
-      </label>
-
-      {/* Agrega��o (s� faz sentido para colunas num�ricas) */}
-      {valueColumn ? (
-        <label className="flex items-center gap-1.5">
-          Agregar
-          <select
-            value={config.aggregate}
-            onChange={(e) =>
-              onConfigChange({ aggregate: e.target.value as ChartAggregate })
-            }
-            className="rounded border bg-background px-1.5 py-1 text-xs text-foreground outline-none"
-            aria-label="Agrega��o do gr�fico"
-          >
-            {CHART_AGGREGATES.filter((a) => a.value !== "count").map((a) => (
-              <option key={a.value} value={a.value}>
-                {a.label}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : null}
-    </div>
-  );
-}
-
-/**
- * Renderiza o gr�fico escolhido (barras/linha/�rea/pizza) com Recharts, num
- * cont�iner responsivo. Cores saem da paleta fixa (`CHART_COLORS`), ciclando
- * quando h� mais categorias que cores.
- */
-function ChartRenderer({
-  kind,
-  data,
-  valueColumn,
-}: {
-  kind: ChartKind;
-  data: ChartPoint[];
-  /** Coluna que originou os valores (formata o eixo e o tooltip). */
-  valueColumn: Column | null;
-}) {
-  const axisProps = {
-    tick: { fontSize: 11 },
-    stroke: "hsl(var(--muted-foreground))",
-  } as const;
-  const gridStroke = "hsl(var(--border))";
-  const tooltipStyle = {
-    borderRadius: 8,
-    border: "1px solid hsl(var(--border))",
-    background: "hsl(var(--popover))",
-    color: "hsl(var(--popover-foreground))",
-    fontSize: 12,
-  } as const;
-
-  /** Formata um valor agregado usando o formato de n�mero da coluna de valor. */
-  const formatValue = (value: number) => formatNumberByColumn(value, valueColumn);
-  /** Formata os r�tulos do eixo Y (evita poluir com decimais). */
-  const tickFormatter = (value: number) => formatValue(value);
-  /** Formata o conte�do do tooltip do Recharts (nome + valor). */
-  const tooltipFormatter = (
-    value: string | number | readonly (string | number)[] | undefined,
-    name: string | number | undefined,
-  ): [string, string] => [
-    formatValue(Number(value)),
-    name === "value" || name === undefined ? "Valor" : String(name),
-  ];
-  /**
-   * Percentual e moeda podem ter casas decimais; demais formatos (e contagem) s�
-   * fazem sentido como inteiros no eixo.
-   */
-  const allowDecimals = valueColumn?.numberFormat === "percent";
-
-  return (
-    <ResponsiveContainer width="100%" height="100%">
-      {kind === "bar" ? (
-        <BarChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
-          <XAxis dataKey="label" {...axisProps} />
-          <YAxis {...axisProps} allowDecimals={allowDecimals} tickFormatter={tickFormatter} />
-          <Tooltip
-            contentStyle={tooltipStyle}
-            cursor={{ fill: gridStroke }}
-            formatter={tooltipFormatter}
-          />
-          <Bar dataKey="value" radius={[4, 4, 0, 0]}>
-            {data.map((point, index) => (
-              <Cell
-                key={point.label}
-                fill={CHART_COLORS[index % CHART_COLORS.length]}
-              />
-            ))}
-          </Bar>
-        </BarChart>
-      ) : kind === "line" ? (
-        <LineChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
-          <XAxis dataKey="label" {...axisProps} />
-          <YAxis {...axisProps} allowDecimals={allowDecimals} tickFormatter={tickFormatter} />
-          <Tooltip contentStyle={tooltipStyle} formatter={tooltipFormatter} />
-          <Line
-            type="monotone"
-            dataKey="value"
-            stroke={CHART_COLORS[0]}
-            strokeWidth={2}
-            dot={{ r: 3 }}
-            activeDot={{ r: 5 }}
-          />
-        </LineChart>
-      ) : kind === "area" ? (
-        <AreaChart data={data} margin={{ top: 8, right: 16, bottom: 8, left: 0 }}>
-          <defs>
-            <linearGradient id="chart-area-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="5%" stopColor={CHART_COLORS[0]} stopOpacity={0.35} />
-              <stop offset="95%" stopColor={CHART_COLORS[0]} stopOpacity={0.02} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid strokeDasharray="3 3" stroke={gridStroke} vertical={false} />
-          <XAxis dataKey="label" {...axisProps} />
-          <YAxis {...axisProps} allowDecimals={allowDecimals} tickFormatter={tickFormatter} />
-          <Tooltip contentStyle={tooltipStyle} formatter={tooltipFormatter} />
-          <Area
-            type="monotone"
-            dataKey="value"
-            stroke={CHART_COLORS[0]}
-            strokeWidth={2}
-            fill="url(#chart-area-fill)"
-          />
-        </AreaChart>
-      ) : (
-        <PieChart>
-          <Tooltip contentStyle={tooltipStyle} formatter={tooltipFormatter} />
-          <Legend wrapperStyle={{ fontSize: 12 }} />
-          <Pie
-            data={data}
-            dataKey="value"
-            nameKey="label"
-            cx="50%"
-            cy="50%"
-            outerRadius="70%"
-            innerRadius="0%"
-            paddingAngle={1}
-          >
-            {data.map((point, index) => (
-              <Cell
-                key={point.label}
-                fill={CHART_COLORS[index % CHART_COLORS.length]}
-              />
-            ))}
-          </Pie>
-        </PieChart>
-      )}
-    </ResponsiveContainer>
-  );
+function normalizeFilter(
+  operator: string | undefined,
+  value: string | undefined,
+): { operator: FilterOperator; value: string | null } {
+  if (value === "checked") return { operator: "is", value: "true" };
+  if (value === "unchecked") return { operator: "is_not", value: "true" };
+  return {
+    operator: (operator ?? "is") as FilterOperator,
+    value: value ?? null,
+  };
 }
 
 interface DatabaseTableProps {
   database: DatabaseModel;
-  /** A��es de persist�ncia (aplicam otimisticamente no pai e persistem no Supabase). */
+  /** Todos os databases do usuário (para configurar/exibir colunas de relação). */
+  allDatabases: DatabaseModel[];
+  /** Ações de persistência (aplicam otimisticamente no pai e persistem no Supabase). */
   onRename: (id: string, name: string) => void;
   onUpdateColumns: (id: string, columns: Column[]) => void;
-  onAddRow: (id: string, initialValues?: Record<string, CellValue>) => void;
+  onAddRow: (
+    id: string,
+    initialValues?: Record<string, CellValue>,
+    afterRowId?: string | null,
+    /** Posição calculada pela Tabela (gaps entre os vizinhos carregados). */
+    position?: number | null,
+  ) => Promise<DbRow | null>;
   onUpdateCell: (
     databaseId: string,
     rowId: string,
     columnId: string,
     value: CellValue,
   ) => void;
-  onDeleteRow: (databaseId: string, rowId: string) => void;
-  /** Aplica uma nova ordem (por id) �s linhas do database, persistindo posi��es. */
+  onDeleteRow: (databaseId: string, rowId: string, removedRow?: DbRow) => void;
+  /** Aplica uma nova ordem (por id) às linhas do database, persistindo posições. */
   onReorderRows: (databaseId: string, orderedIds: string[]) => void;
+  /** Aplica novas `position` a um subconjunto de linhas (reorder por keyset). */
+  onRowsReordered: (
+    databaseId: string,
+    updates: { id: string; position: number }[],
+  ) => void;
   onAddTemplate: (
     databaseId: string,
     name: string,
@@ -1647,7 +458,7 @@ interface DatabaseTableProps {
     recurrence: Recurrence | null,
   ) => void;
   onDeleteTemplate: (databaseId: string, templateId: string) => void;
-  /** Cria um novo item (linha) no database a partir de um modelo de p�gina. */
+  /** Cria um novo item (linha) no database a partir de um modelo de página. */
   onApplyTemplate: (databaseId: string, template: PageTemplate) => void;
   /** Exclui o database inteiro (tabela e suas linhas). */
   onDeleteDatabase: (id: string) => void;
@@ -1655,10 +466,34 @@ interface DatabaseTableProps {
   onUpdateIcon: (id: string, icon: string | null) => void;
   /** Volta para a lista de databases. */
   onBack: () => void;
+  /**
+   * Abre outro database pelo id. Usado pelo link ao lado do nome: quando este
+   * database tem uma coluna de relação configurada, o link leva ao database de
+   * destino (aparece assim que a relação é criada).
+   */
+  onOpenDatabase: (id: string) => void;
+  /** Notifica um erro para o wrapper exibir a mensagem ao usuário. */
+  onError: (message: string) => void;
+  /** Aplica um patch em outro database (ex.: coluna espelho criada/removida). */
+  onPatchDatabase: (id: string, patch: Partial<DatabaseModel>) => void;
+  /**
+   * Id do database **como entidade** (nome/ícone/abas/exclusão). Igual a
+   * `database.id` normalmente; numa visão vinculada é o id da visão, enquanto
+   * `database.id` é o da origem (de onde vêm colunas, linhas e templates).
+   */
+  viewId: string;
+  /**
+   * Quando este database é uma **visão vinculada**, o id do database de origem
+   * (usado pelo link ao lado do nome e para marcar a visão). `null` caso não seja.
+   */
+  linkedDatabaseId: string | null;
 }
 
 function DatabaseTable({
   database,
+  allDatabases,
+  viewId,
+  linkedDatabaseId,
   onRename,
   onUpdateIcon,
   onUpdateColumns,
@@ -1666,14 +501,36 @@ function DatabaseTable({
   onUpdateCell,
   onDeleteRow,
   onReorderRows,
+  onRowsReordered,
   onAddTemplate,
   onDeleteTemplate,
   onApplyTemplate,
   onDeleteDatabase,
   onBack,
+  onOpenDatabase,
+  onError,
+  onPatchDatabase,
 }: DatabaseTableProps) {
   const { id: databaseId, columns, rows, name: title, icon, templates } = database;
   const TitleIcon = databaseIcon(icon);
+  /** Databases por id (resolve colunas/títulos das colunas de relação). */
+  const databasesById = useMemo(
+    () => new Map(allDatabases.map((d) => [d.id, d])),
+    [allDatabases],
+  );
+  /**
+   * Database "relacionado" a este, para o link ao lado do nome: numa **visão
+   * vinculada** é o database de origem; caso contrário, usa `relatedDatabaseFor`
+   * (destino da relação deste database ou a origem de uma relação que aponte
+   * para este).
+   */
+  const linkedDatabase = useMemo(
+    () =>
+      linkedDatabaseId
+        ? databasesById.get(linkedDatabaseId) ?? null
+        : relatedDatabaseFor(databaseId, columns, allDatabases),
+    [linkedDatabaseId, databasesById, databaseId, columns, allDatabases],
+  );
   const setColumns = useCallback(
     (updater: Column[] | ((prev: Column[]) => Column[])) => {
       const next = typeof updater === "function" ? updater(columns) : updater;
@@ -1683,92 +540,213 @@ function DatabaseTable({
   );
   const setTitle = useCallback(
     (value: string) => {
-      onRename(databaseId, value);
+      // Nome é da **visão** (entidade), não da origem dos dados.
+      onRename(viewId, value);
     },
-    [databaseId, onRename],
+    [viewId, onRename],
   );
   const [query, setQuery] = useState("");
   const [openCell, setOpenCell] = useState<string | null>(null);
-  /** Texto do campo "criar op��o" dentro do menu de uma c�lula select/multi_select. */
+  /** Posição (viewport) do popover do seletor da célula de relação aberta. */
+  const [relationCellPos, setRelationCellPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  /** Item referenciado aberto no `DatabaseItemPopover` (âncora = o chip). */
+  const [openItem, setOpenItem] = useState<{
+    databaseId: string;
+    rowId: string;
+    anchorEl: HTMLElement;
+  } | null>(null);
+  /** Texto do campo "criar opção" dentro do menu de uma célula select/multi_select. */
   const [newOptionText, setNewOptionText] = useState("");
   /** Id da coluna com o editor de propriedade aberto. */
   const [openColumnEditor, setOpenColumnEditor] = useState<string | null>(null);
   /**
-   * Id da coluna cujo popover "Alterar tipo" est� aberto no cabe�alho (topo da
+   * Id da coluna cujo popover "Alterar tipo" está aberto no cabeçalho (topo da
    * tabela), na propriedade Status.
    */
   const [openHeaderTypeMenu, setOpenHeaderTypeMenu] = useState<string | null>(
     null,
   );
   /**
-   * Id da coluna cujo popover "Editar propriedade" (n�vel 1, aberto para
-   * propriedades do tipo n�mero) est� aberto no cabe�alho.
+   * Id da coluna cujo popover "Editar propriedade" (nível 1, aberto para
+   * propriedades do tipo número) está aberto no cabeçalho.
    */
   const [openPropEditMenu, setOpenPropEditMenu] = useState<string | null>(null);
   /**
-   * Id da coluna cujo submenu "Formato de n�mero" (n�vel 2) est� aberto, com as
-   * op��es N�mero / N�mero com separadores / Percentual / Moedas.
+   * Id da coluna cujo submenu "Formato de número" (nível 2) está aberto, com as
+   * opções Número / Número com separadores / Percentual / Moedas.
    */
   const [openNumberFormatMenu, setOpenNumberFormatMenu] = useState<string | null>(
     null,
   );
   /**
-   * Id da coluna cujo submenu "Casas decimais" (n�vel 2) est� aberto, com as
-   * op��es Padr�o / 0 / 1 / 2 / 3 / 4 / 5.
+   * Id da coluna cujo submenu "Casas decimais" (nível 2) está aberto, com as
+   * opções Padrão / 0 / 1 / 2 / 3 / 4 / 5.
    */
   const [openDecimalsMenu, setOpenDecimalsMenu] = useState<string | null>(null);
   /**
-   * Id da coluna cujo seletor de �cone est� aberto (bot�o � esquerda do nome no
+   * Id da coluna cujo submenu "Calcular" (nível 2) está aberto, com as funções
+   * de agregação exibidas no rodapé da coluna (estilo Notion).
+   */
+  const [openCalcMenu, setOpenCalcMenu] = useState<string | null>(null);
+  /**
+   * Id da coluna cujo seletor de ícone está aberto (botão à esquerda do nome no
    * popover "Editar propriedade").
    */
   const [openIconPicker, setOpenIconPicker] = useState<string | null>(null);
   /** Controla o seletor de ícone do próprio database (botão à esquerda do título). */
   const [openTitleIconPicker, setOpenTitleIconPicker] = useState(false);
   /**
-   * Id da coluna cujo sub-popover de "Op��es de status" est� aberto (bot�o
+   * Id da coluna cujo sub-popover de "Opções de status" está aberto (botão
    * dentro do popover "Editar propriedade", para colunas do tipo status).
    */
   const [openStatusOptions, setOpenStatusOptions] = useState<string | null>(null);
   /**
-   * Id da coluna cujo sub-popover de "Op��es" est� aberto (bot�o dentro do
-   * popover "Editar propriedade", para colunas do tipo sele��o).
+   * Id da coluna cujo sub-popover de "Opções" está aberto (botão dentro do
+   * popover "Editar propriedade", para colunas do tipo seleção).
    */
   const [openSelectOptions, setOpenSelectOptions] = useState<string | null>(null);
   /** Posicionamento (abre para baixo/cima e esquerda/direita) dos submenus internos. */
   const numberFormatMenuFlip = useFlipPopover<HTMLDivElement>();
   const decimalsMenuFlip = useFlipPopover<HTMLDivElement>();
+  const calcMenuFlip = useFlipPopover<HTMLDivElement>();
   const iconPickerFlip = useFlipPopover<HTMLDivElement>();
   /**
-   * Submenus do cabe�alho ("Alterar tipo", "Editar propriedade" e "Op��es de
+   * Editor de propriedade do cabeçalho (aberto pelo botão "+" e pelo clique na
+   * propriedade). É posicionado com `position: fixed` a partir do cabeçalho da
+   * coluna, para não ser recortado pelo container/tabela quando a coluna está
+   * perto da borda direita da tela.
+   */
+  const columnHeaderRef = useRef<HTMLTableCellElement | null>(null);
+  const [columnEditorPos, setColumnEditorPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+
+  // Posiciona o editor de propriedade (fixed) logo abaixo do cabeçalho da coluna,
+  // mantendo-o dentro da viewport. Recalcula ao rolar/redimensionar.
+  useLayoutEffect(() => {
+    if (!openColumnEditor) {
+      setColumnEditorPos(null);
+      return;
+    }
+    const compute = () => {
+      const th = columnHeaderRef.current;
+      if (!th) return;
+      const rect = th.getBoundingClientRect();
+      const width = 288; // w-72 (maior variante)
+      const margin = 8;
+      const left = Math.min(
+        Math.max(margin, rect.left),
+        Math.max(margin, window.innerWidth - width - margin),
+      );
+      setColumnEditorPos({ top: rect.bottom + 4, left });
+    };
+    compute();
+    window.addEventListener("scroll", compute, true);
+    window.addEventListener("resize", compute);
+    return () => {
+      window.removeEventListener("scroll", compute, true);
+      window.removeEventListener("resize", compute);
+    };
+  }, [openColumnEditor]);
+  /**
+   * Submenus do cabeçalho ("Alterar tipo", "Editar propriedade" e "Opções de
    * status") abrem ao lado direito do popover da propriedade e flipam para a
-   * esquerda quando n�o h� espa�o � direita (coluna pr�xima � borda da tela).
+   * esquerda quando não há espaço à direita (coluna próxima à borda da tela).
    */
   const headerTypeMenuSide = useFlipSide<HTMLDivElement>();
   const propEditMenuSide = useFlipSide<HTMLDivElement>();
   const statusOptionsSide = useFlipSide<HTMLDivElement>();
   const selectOptionsSide = useFlipSide<HTMLDivElement>();
-  /** Id da linha com a p�gina aberta (modal flutuante). */
+  /** Id da linha com a página aberta (modal flutuante). */
   const [openRowPage, setOpenRowPage] = useState<string | null>(null);
-  /** Controla a abertura do di�logo de cria��o/gest�o de modelos de p�gina. */
+  /** Ids das linhas marcadas pelo checkbox da coluna de seleção (gutter). */
+  const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  /** Id da linha sendo arrastada pela alça (reordenação). */
+  const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
+  /** Id da linha antes da qual o item arrastado será solto (null = no fim). */
+  const [rowDropBeforeId, setRowDropBeforeId] = useState<string | null>(null);
+  /** Id da linha recém-criada pelo botão "+" que deve receber foco no 1º campo. */
+  const [pendingFocusRowId, setPendingFocusRowId] = useState<string | null>(null);
+  /**
+   * Ids das linhas recém-criadas que devem permanecer visíveis mesmo com uma
+   * busca ativa (elas nascem vazias e, sem isso, seriam escondidas pelo filtro —
+   * o que fazia parecer que "Nova linha" não funcionava). É um conjunto para
+   * que cada linha criada continue visível, e não apenas a última.
+   */
+  const [pinnedRowIds, setPinnedRowIds] = useState<Set<string>>(new Set());
+  /** Controla a abertura do diálogo de criação/gestão de modelos de página. */
   const [isTemplateDialogOpen, setIsTemplateDialogOpen] = useState(false);
-  /** �ncora do bot�o "Criar modelo" � usada para ancorar o popover da lista. */
+  /** Controla a abertura do popover "Filtrar" (lista de propriedades). */
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  /** Controla a abertura do popover do "+" da barra de filtros. */
+  const [isFilterBarOpen, setIsFilterBarOpen] = useState(false);
+  /** Minimiza (oculta) a barra de filtros, mantendo os filtros ativos. */
+  const [filtersCollapsed, setFiltersCollapsed] = useState(false);
+  /** Id do botão de filtro cujo popover de opções está aberto. */
+  const [filterChipId, setFilterChipId] = useState<string | null>(null);
+  /** Id do chip cujo popover de operador de filtro está aberto. */
+  const [filterOperatorChipId, setFilterOperatorChipId] = useState<
+    string | null
+  >(null);
+  /** Posição (viewport) do popover de opções do filtro. */
+  const [filterChipPos, setFilterChipPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  /** âncora do botão "Filtrar" é usada para ancorar o popover de propriedades. */
+  const filterAnchorRef = useRef<HTMLDivElement>(null);
+  /** âncora do botão "Criar modelo" é usada para ancorar o popover da lista. */
   const templateAnchorRef = useRef<HTMLDivElement>(null);
-  /** �ncora do bot�o de configura��es � usada para ancorar o popover abaixo dele. */
+  /** âncora do botão de configurações é usada para ancorar o popover abaixo dele. */
   const settingsAnchorRef = useRef<HTMLDivElement>(null);
-  /** �ncora do bot�o de �cone do database � usada para ancorar o seletor abaixo. */
+  /** âncora do botão de ícone do database é usada para ancorar o seletor abaixo. */
   const titleIconAnchorRef = useRef<HTMLDivElement>(null);
-  /** Container rol�vel da tabela � usado para medir a largura dispon�vel. */
+  /** Container rolável da tabela é usado para medir a largura disponível. */
   const tableScrollRef = useRef<HTMLDivElement>(null);
-  /** Controla a abertura do popover de configura��es da tabela. */
+  /** Cabeçalho da tabela (`<thead>`): mede a altura para o `scrollMargin`. */
+  const tableHeadRef = useRef<HTMLTableSectionElement>(null);
+  /** Altura (px) do cabeçalho sticky, medida do DOM (offset da lista). */
+  const [tableHeadHeight, setTableHeadHeight] = useState(0);
+  /** Altura (px) de uma linha, calibrada pela 1ª `<tr>` renderizada. */
+  const [rowHeight, setRowHeight] = useState(DEFAULT_ROW_HEIGHT);
+  /** Id da linha com foco (célula em edição) — mantida montada na virtualização. */
+  const [activeRowId, setActiveRowId] = useState<string | null>(null);
+  /**
+   * Contador incrementado nas mutações de dados (edição/adição/remoção de linha)
+   * para recalcular os agregados do rodapé. **Não** muda na paginação.
+   */
+  const [dataRevision, setDataRevision] = useState(0);
+  /** Barra das abas de visualização é usada para medir o espaço disponível. */
+  const viewTabsBarRef = useRef<HTMLDivElement>(null);
+  /** Lista de abas renderizada (null quando recolhida no botão "Mais"). */
+  const viewTabsListRef = useRef<HTMLDivElement>(null);
+  /** Camada invisível com as abas em tamanho natural (para medir overflow). */
+  const viewTabsMeasureRef = useRef<HTMLDivElement>(null);
+  /** Controla a abertura do popover de configurações da tabela. */
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   /**
-   * Largura (px) da coluna "fantasma" da tabela. Ela absorve o espa�o restante
-   * do container rol�vel para esticar a tabela at� o fim da tela (as linhas
+   * Largura (px) da coluna "fantasma" da tabela. Ela absorve o espaço restante
+   * do container rolável para esticar a tabela até o fim da tela (as linhas
    * horizontais passam a cobrir toda a largura). Vale 0 quando a soma das
-   * colunas j� ultrapassa o container (caso em que h� rolagem horizontal).
+   * colunas já ultrapassa o container (caso em que há rolagem horizontal).
    */
   const [tableSpacerWidth, setTableSpacerWidth] = useState(0);
-  /** Tela inicial do popover de configura��es ao ser aberto (menu ou edi��o). */
+  /** Sinaliza para rolar a tabela até o fim após adicionar uma nova coluna. */
+  const [scrollToColumnsEnd, setScrollToColumnsEnd] = useState(false);
+
+  // Ao adicionar uma coluna, rola a tabela para o fim para que a nova propriedade
+  // fique visível no cabeçalho (as demais "empurram" para a esquerda), sem cortar.
+  useLayoutEffect(() => {
+    if (!scrollToColumnsEnd) return;
+    const el = tableScrollRef.current;
+    if (el) el.scrollLeft = el.scrollWidth;
+    setScrollToColumnsEnd(false);
+  }, [scrollToColumnsEnd, columns]);
+  /** Tela inicial do popover de configurações ao ser aberto (menu ou edição). */
   const [settingsInitialView, setSettingsInitialView] = useState<
     "menu" | "edit" | "visibility"
   >("menu");
@@ -1776,72 +754,329 @@ function DatabaseTable({
   const [resizing, setResizing] = useState<{ columnId: string; width: number } | null>(
     null,
   );
-  /** Visualiza��es criadas pelo usu�rio sobre este database (tabela/kanban). */
+  /** Visualizações criadas pelo usuário sobre este database (tabela/kanban). */
   const [views, setViews] = useState<DbView[]>(
-    () => loadPersistedViews(databaseId)?.views ?? initialViews(columns),
+    () => loadPersistedViews(viewId)?.views ?? initialViews(columns),
   );
-  /** Id da visualiza��o ativa (aba selecionada). */
+  /** Id da visualização ativa (aba selecionada). */
   const [activeViewId, setActiveViewId] = useState<string>(
-    () => loadPersistedViews(databaseId)?.activeViewId ?? views[0].id,
+    () => loadPersistedViews(viewId)?.activeViewId ?? views[0].id,
   );
-  /** Controla o menu do bot�o "+" (criar nova visualiza��o). */
+  /** Controla o menu do botão "+" (criar nova visualização). */
   const [viewsMenuOpen, setViewsMenuOpen] = useState(false);
-  /** Id da visualiza��o sendo renomeada (inline no r�tulo da aba). */
+  /**
+   * Quantas abas de visualização cabem inteiras na largura disponível. As que
+   * não cabem ficam acessíveis pelo botão "Mais" (que aparece nesse caso).
+   */
+  const [visibleViewCount, setVisibleViewCount] = useState(views.length);
+  /** Controla a abertura do popover "Mais" (lista de visualizações). */
+  const [overflowViewsOpen, setOverflowViewsOpen] = useState(false);
+  /** Texto de busca do popover "Mais" (filtra as visualizações pelo nome). */
+  const [overflowViewsQuery, setOverflowViewsQuery] = useState("");
+  /** Posição (viewport) do popover "Mais", calculada ao abrir. */
+  const [overflowViewsPos, setOverflowViewsPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  /** Botão "Mais" usado para ancorar o popover flutuante. */
+  const overflowViewsBtnRef = useRef<HTMLButtonElement>(null);
+  /** Controla o submenu "Nova visualização" (abre à esquerda do botão). */
+  const [overflowNewOpen, setOverflowNewOpen] = useState(false);
+  /** Posição (viewport) do submenu "Nova visualização". */
+  const [overflowNewPos, setOverflowNewPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  /** Botão "Nova visualização" usado para ancorar o submenu. */
+  const overflowNewBtnRef = useRef<HTMLButtonElement>(null);
+  /** Id da visualização sendo renomeada (inline no rótulo da aba). */
   const [renamingViewId, setRenamingViewId] = useState<string | null>(null);
+  /** Id da visualização sendo arrastada para reordenar as abas. */
+  const [draggingViewId, setDraggingViewId] = useState<string | null>(null);
+  /** Id da aba antes da qual o item arrastado será solto (null = no fim). */
+  const [viewDropBeforeId, setViewDropBeforeId] = useState<string | null>(null);
+  /** Id da visualização cujo menu (clique na aba ativa) está aberto. */
+  const [viewMenuId, setViewMenuId] = useState<string | null>(null);
+  /** Posição (viewport) do menu da visualização, calculada ao abrir. */
+  const [viewMenuPos, setViewMenuPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   /** Coluna usada para agrupar os itens no Kanban (select/status). */
   const [kanbanColumnId, setKanbanColumnId] = useState<string | null>(
-    () => loadPersistedViews(databaseId)?.kanbanColumnId ?? defaultKanbanColumnId(columns),
+    () => loadPersistedViews(viewId)?.kanbanColumnId ?? defaultKanbanColumnId(columns),
   );
-  /** Configura��o da visualiza��o "Gr�fico" (formato, categoria, valor, agrega��o). */
-  const [chartConfig, setChartConfig] = useState<ChartConfig>(
-    () => loadPersistedViews(databaseId)?.chart ?? defaultChartConfig(columns),
+  // --- Filtros por visualização -------------------------------------------
+  // Cada visualização tem seus próprios filtros (independentes das demais).
+  const activeViewRecord = views.find((v) => v.id === activeViewId);
+  /** Ids das propriedades usadas como filtro na visualização ativa. */
+  const filterColumnIds =
+    activeViewRecord?.filters?.columnIds ?? EMPTY_FILTER_IDS;
+  /** Valor escolhido por filtro (id da opção; "true" p/ caixa de seleção). */
+  const filterValues =
+    activeViewRecord?.filters?.values ?? EMPTY_FILTER_VALUES;
+  /** Operador de filtro por propriedade (default "is"). */
+  const filterOperators =
+    activeViewRecord?.filters?.operators ?? EMPTY_FILTER_OPERATORS;
+
+  /** Atualiza os filtros apenas da visualização ativa. */
+  function updateActiveViewFilters(
+    updater: (cur: {
+      columnIds: string[];
+      values: Record<string, string>;
+      operators: Record<string, string>;
+    }) => {
+      columnIds: string[];
+      values: Record<string, string>;
+      operators: Record<string, string>;
+    },
+  ) {
+    setViews((prev) =>
+      prev.map((v) =>
+        v.id === activeViewId
+          ? {
+              ...v,
+              filters: updater({
+                columnIds: v.filters?.columnIds ?? [],
+                values: v.filters?.values ?? {},
+                operators: v.filters?.operators ?? {},
+              }),
+            }
+          : v,
+      ),
+    );
+  }
+
+  /** Define as propriedades filtradas da visualização ativa. */
+  const setFilterColumnIds = (
+    updater: string[] | ((prev: string[]) => string[]),
+  ) => {
+    updateActiveViewFilters((cur) => ({
+      ...cur,
+      columnIds: typeof updater === "function" ? updater(cur.columnIds) : updater,
+    }));
+  };
+
+  /** Define os valores de filtro da visualização ativa. */
+  const setFilterValues = (
+    updater:
+      | Record<string, string>
+      | ((prev: Record<string, string>) => Record<string, string>),
+  ) => {
+    updateActiveViewFilters((cur) => ({
+      ...cur,
+      values: typeof updater === "function" ? updater(cur.values) : updater,
+    }));
+  };
+
+  /** Define os operadores de filtro da visualização ativa. */
+  const setFilterOperators = (
+    updater:
+      | Record<string, string>
+      | ((prev: Record<string, string>) => Record<string, string>),
+  ) => {
+    updateActiveViewFilters((cur) => ({
+      ...cur,
+      operators:
+        typeof updater === "function"
+          ? updater(cur.operators ?? {})
+          : updater,
+    }));
+  };
+
+  // --- Configuração do gráfico por visualização ---------------------------
+  // Cada visualização "Gráfico" tem sua própria configuração (formato, eixos...).
+  /** Configuração do gráfico da visualização ativa (padrão quando ausente). */
+  const chartConfig = activeViewRecord?.chart ?? defaultChartConfig(columns);
+
+  /** Aplica um patch na configuração do gráfico da visualização ativa. */
+  function updateChartConfig(patch: Partial<ChartConfig>) {
+    setViews((prev) =>
+      prev.map((v) =>
+        v.id === activeViewId
+          ? {
+              ...v,
+              chart: { ...(v.chart ?? defaultChartConfig(columns)), ...patch },
+            }
+          : v,
+      ),
+    );
+  }
+
+  /**
+   * Lista de propriedades do popover "Filtrar" (compartilhada pelo botão do
+   * cabeçalho e pelo "+" da barra de filtros). `close` fecha o popover de origem.
+   */
+  const renderFilterPropertyList = (close: () => void) => (
+    <>
+      <p className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+        Propriedades
+      </p>
+      {columns.length === 0 ? (
+        <p className="px-2 py-1.5 text-xs text-muted-foreground">
+          Nenhuma propriedade.
+        </p>
+      ) : (
+        // Rollup é calculado — não é filtrável (fica fora da lista de filtros).
+        columns
+          .filter((column) => column.type !== "rollup")
+          .map((column) => {
+          const Icon = columnIcon(column);
+          const active = filterColumnIds.includes(column.id);
+          return (
+            <button
+              key={column.id}
+              type="button"
+              role="menuitem"
+              onClick={() => {
+                // Adiciona/remove a propriedade como filtro e fecha o popover.
+                setFilterColumnIds((prev) =>
+                  prev.includes(column.id)
+                    ? prev.filter((id) => id !== column.id)
+                    : [...prev, column.id],
+                );
+                // Garante que a barra de filtros esteja visível ao escolher.
+                setFiltersCollapsed(false);
+                close();
+              }}
+              className={cn(
+                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                active ? "text-foreground" : "text-muted-foreground",
+              )}
+            >
+              <Icon className="h-3.5 w-3.5 flex-none" />
+              <span className="min-w-0 truncate">{column.name}</span>
+              {active ? (
+                <Check className="ml-auto h-3.5 w-3.5 flex-none" />
+              ) : null}
+            </button>
+          );
+        })
+      )}
+    </>
   );
 
   /**
-   * Persiste as visualiza��es (lista, ativa, agrupamento e gr�fico) sempre que
-   * mudarem, para que a �ltima configura��o seja restaurada ao reabrir.
+   * Persiste as visualizações (lista, ativa e agrupamento) sempre que mudarem,
+   * para que a última configuração seja restaurada ao reabrir. A configuração
+   * do gráfico e os filtros viajam dentro de cada visualização (`views`).
    */
   useEffect(() => {
-    savePersistedViews(databaseId, {
+    savePersistedViews(viewId, {
       views,
       activeViewId,
       kanbanColumnId,
-      chart: chartConfig,
     });
-  }, [databaseId, views, activeViewId, kanbanColumnId, chartConfig]);
+  }, [viewId, views, activeViewId, kanbanColumnId]);
+
+  /** Nem todas as abas cabem: o botão "Mais" é exibido no lugar do "+". */
+  const viewsCollapsed = visibleViewCount < views.length;
 
   /**
-   * Mant�m a configura��o do gr�fico coerente com as colunas existentes: se a
-   * categoria/valor escolhidos deixarem de existir, cai para valores v�lidos.
+   * Mede quantas abas de visualização cabem inteiras na largura disponível.
+   * Usa a largura natural de cada aba (camada invisível) contra o espaço que
+   * sobra na barra após os controles. Recalcula a cada resize (ResizeObserver).
+   */
+  useLayoutEffect(() => {
+    const bar = viewTabsBarRef.current;
+    const measure = viewTabsMeasureRef.current;
+    if (!bar || !measure) return;
+    const compute = () => {
+      const styles = window.getComputedStyle(bar);
+      const padding =
+        parseFloat(styles.paddingLeft) + parseFloat(styles.paddingRight);
+      const gap = parseFloat(styles.columnGap || styles.gap) || 0;
+      const children = Array.from(bar.children).filter(
+        (child) => !(child as HTMLElement).hasAttribute("data-views-measure"),
+      );
+      const gaps = gap * Math.max(0, children.length - 1);
+      // Soma a largura dos controles (tudo, menos a própria lista de abas).
+      let controlsWidth = 0;
+      for (const child of children) {
+        if (child === viewTabsListRef.current) continue;
+        controlsWidth += (child as HTMLElement).offsetWidth;
+      }
+      const available = bar.clientWidth - padding - controlsWidth - gaps;
+      // Conta quantas abas cabem inteiras (a próxima nunca fica cortada).
+      const tabEls = Array.from(measure.children) as HTMLElement[];
+      let used = 0;
+      let count = 0;
+      for (const el of tabEls) {
+        const width = el.offsetWidth;
+        const add = count === 0 ? width : gap + width;
+        if (used + add <= available) {
+          used += add;
+          count += 1;
+        } else {
+          break;
+        }
+      }
+      setVisibleViewCount(count);
+    };
+    compute();
+    const observer = new ResizeObserver(compute);
+    observer.observe(bar);
+    observer.observe(measure);
+    return () => observer.disconnect();
+  }, [views, activeViewId, renamingViewId, visibleViewCount, viewsCollapsed]);
+
+  // Fecha o popover "Mais" ao voltar a caber tudo na barra.
+  useEffect(() => {
+    if (!viewsCollapsed) setOverflowViewsOpen(false);
+  }, [viewsCollapsed]);
+
+  /**
+   * Mantém a configuração do gráfico de cada visualização coerente com as
+   * colunas existentes: se a categoria/valor escolhidos deixarem de existir,
+   * cai para valores válidos.
    */
   useEffect(() => {
-    setChartConfig((prev) => {
-      const groupOk =
-        prev.groupColumnId !== null &&
-        chartGroupColumns(columns).some((c) => c.id === prev.groupColumnId);
-      const valueOk =
-        prev.valueColumnId === CHART_COUNT ||
-        chartNumberColumns(columns).some((c) => c.id === prev.valueColumnId);
-      if (groupOk && valueOk) return prev;
-      return {
-        ...prev,
-        groupColumnId: groupOk
-          ? prev.groupColumnId
-          : defaultChartConfig(columns).groupColumnId,
-        valueColumnId: valueOk
-          ? prev.valueColumnId
-          : defaultChartConfig(columns).valueColumnId,
-      };
+    setViews((prev) => {
+      let changed = false;
+      const next = prev.map((v) => {
+        if (!v.chart) return v;
+        const cur = v.chart;
+        const groupOk =
+          cur.groupColumnId !== null &&
+          chartGroupColumns(columns).some((c) => c.id === cur.groupColumnId);
+        const valueOk =
+          cur.valueColumnId === CHART_COUNT ||
+          chartNumberColumns(columns).some((c) => c.id === cur.valueColumnId);
+        if (groupOk && valueOk) return v;
+        changed = true;
+        return {
+          ...v,
+          chart: {
+            ...cur,
+            groupColumnId: groupOk
+              ? cur.groupColumnId
+              : defaultChartConfig(columns).groupColumnId,
+            valueColumnId: valueOk
+              ? cur.valueColumnId
+              : defaultChartConfig(columns).valueColumnId,
+          },
+        };
+      });
+      return changed ? next : prev;
     });
   }, [columns]);
 
   /**
-   * Fecha o popup do editor de propriedade e o menu de c�lula ao clicar fora.
-   * Ignora cliques na pr�pria al�a de abertura (data-*-trigger) e no popup
-   * (data-column-editor / data-cell-menu), para n�o brigar com o toggle.
+   * Fecha o popup do editor de propriedade e o menu de célula ao clicar fora.
+   * Ignora cliques na própria alça de abertura (data-*-trigger) e no popup
+   * (data-column-editor / data-cell-menu), para não brigar com o toggle.
    */
   useEffect(() => {
-    if (!openColumnEditor && !openCell && !viewsMenuOpen) return;
+    if (
+      !openColumnEditor &&
+      !openCell &&
+      !viewsMenuOpen &&
+      !isFilterOpen &&
+      !isFilterBarOpen &&
+      !filterChipId &&
+      !filterOperatorChipId
+    )
+      return;
     function handlePointerDown(event: PointerEvent) {
       const target = event.target as HTMLElement | null;
       if (!target) return;
@@ -1856,6 +1091,8 @@ function DatabaseTable({
         target.closest("[data-number-format-menu]") ||
         target.closest("[data-decimals-menu-trigger]") ||
         target.closest("[data-decimals-menu]") ||
+        target.closest("[data-calc-menu-trigger]") ||
+        target.closest("[data-calc-menu]") ||
         target.closest("[data-icon-picker-trigger]") ||
         target.closest("[data-icon-picker]") ||
         target.closest("[data-status-options-trigger]") ||
@@ -1865,8 +1102,18 @@ function DatabaseTable({
         target.closest("[data-option-color-palette]") ||
         target.closest("[data-cell-menu-trigger]") ||
         target.closest("[data-cell-menu]") ||
+        target.closest("[data-relation-cell-trigger]") ||
+        target.closest("[data-relation-cell-popover]") ||
         target.closest("[data-views-menu-trigger]") ||
-        target.closest("[data-views-menu]")
+        target.closest("[data-views-menu]") ||
+        target.closest("[data-filter-trigger]") ||
+        target.closest("[data-filter-popover]") ||
+        target.closest("[data-filter-bar-trigger]") ||
+        target.closest("[data-filter-bar-popover]") ||
+        target.closest("[data-filter-chip-trigger]") ||
+        target.closest("[data-filter-chip-popover]") ||
+        target.closest("[data-filter-operator-trigger]") ||
+        target.closest("[data-filter-operator-popover]")
       ) {
         return;
       }
@@ -1875,37 +1122,309 @@ function DatabaseTable({
       setOpenPropEditMenu(null);
       setOpenNumberFormatMenu(null);
       setOpenDecimalsMenu(null);
+      setOpenCalcMenu(null);
       setOpenIconPicker(null);
       setOpenCell(null);
+      setRelationCellPos(null);
       setViewsMenuOpen(false);
+      setIsFilterOpen(false);
+      setIsFilterBarOpen(false);
+      setFilterChipId(null);
+      setFilterOperatorChipId(null);
     }
     document.addEventListener("pointerdown", handlePointerDown);
     return () => document.removeEventListener("pointerdown", handlePointerDown);
-  }, [openColumnEditor, openCell, viewsMenuOpen]);
+  }, [
+    openColumnEditor,
+    openCell,
+    viewsMenuOpen,
+    isFilterOpen,
+    isFilterBarOpen,
+    filterChipId,
+    filterOperatorChipId,
+  ]);
 
-  const filtered = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) =>
-      Object.values(r.values).some((v) =>
-        (Array.isArray(v) ? v.join(" ") : String(v ?? ""))
-          .toLowerCase()
-          .includes(q),
-      ),
-    );
-  }, [rows, query]);
-  /** Colunas vis�veis na tabela (respeita a visibilidade definida pelo usu�rio). */
+  /** Linhas completas, carregadas sob demanda para Kanban/Gráfico (a Tabela é
+   *  paginada por cursor). */
+  const { rows: allRows } = useAllDatabaseRows(
+    databaseId,
+    (views.find((v) => v.id === activeViewId) ?? views[0])?.type !== "table",
+  );
+
+  // Ao mudar os filtros, libera as linhas "fixadas" para que o filtro valha.
+  useEffect(() => {
+    setPinnedRowIds(new Set());
+  }, [filterColumnIds, filterValues]);
+  /** Colunas visíveis na tabela (respeita a visibilidade definida pelo usuário). */
   const visibleColumns = useMemo(
     () => columns.filter((c) => !c.hidden),
     [columns],
   );
 
+  // --- Paginação por cursor das linhas (visão Tabela) --------------------
+  /** Busca "debounced" (250ms): o filtro de texto é aplicado no servidor. */
+  const [debouncedQuery, setDebouncedQuery] = useState(query);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), 250);
+    return () => clearTimeout(timer);
+  }, [query]);
+
+  /** Filtros por propriedade traduzidos para o servidor. */
+  const serverFilters = useMemo<RowsFilter[]>(() => {
+    const out: RowsFilter[] = [];
+    for (const id of filterColumnIds) {
+      const column = columns.find((c) => c.id === id);
+      const { operator, value } = normalizeFilter(
+        filterOperators[id],
+        filterValues[id],
+      );
+      // Relação: resolve contra `relation_links` (operadores `relation_*`).
+      const op =
+        column?.type === "relation" ? relationFilterOperator(operator) : operator;
+      // "" é um valor válido (Desmarcadas) — só `null` significa "sem valor".
+      if (
+        (op === "is" ||
+          op === "is_not" ||
+          op === "relation_is" ||
+          op === "relation_is_not") &&
+        value === null
+      )
+        continue;
+      out.push({ columnId: id, operator: op, value: value ?? undefined });
+    }
+    return out;
+  }, [filterColumnIds, filterOperators, filterValues, columns]);
+
+  /** A visão ativa é a Tabela (paginada por cursor)? */
+  const activeViewIsTable =
+    (views.find((v) => v.id === activeViewId) ?? views[0])?.type === "table";
+
+  const {
+    rows: tableRows,
+    loadingMore: tableRowsLoadingMore,
+    error: tableRowsError,
+    hasMore: tableRowsHasMore,
+    fetchNextPage: fetchNextRowsPage,
+    patchRows: patchTableRows,
+  } = useDatabaseRows({
+    // Só busca páginas quando a visão Tabela está ativa.
+    databaseId: activeViewIsTable ? databaseId : null,
+    search: debouncedQuery,
+    filters: serverFilters,
+    limit: ROWS_PAGE_SIZE,
+  });
+
+  // --- Relação (vínculos) e Rollup (calculado) ----------------------------
+  /** Colunas de rollup configuradas. */
+  const rollupColumns = useMemo(
+    () => columns.filter((c) => c.type === "rollup" && c.rollup),
+    [columns],
+  );
+  /** Ids das linhas carregadas (Tabela paginada ou visões com conjunto completo). */
+  const loadedRowIds = useMemo(() => {
+    const source = activeViewIsTable ? tableRows : allRows;
+    return source.map((r) => r.id);
+  }, [activeViewIsTable, tableRows, allRows]);
+
+  const { getTargets, setTargets } = useRelationLinks(loadedRowIds);
+
+  /** Requisições de rollup (uma por coluna), com o tipo da propriedade alvo. */
+  const rollupRequests = useMemo<RollupValueRequest[]>(() => {
+    const out: RollupValueRequest[] = [];
+    for (const column of rollupColumns) {
+      const config = column.rollup;
+      if (!config) continue;
+      const relationColumn = columns.find(
+        (c) => c.id === config.relationPropertyId,
+      );
+      const targetDb = relationColumn?.relationDatabaseId
+        ? databasesById.get(relationColumn.relationDatabaseId)
+        : undefined;
+      const targetColumn = targetDb?.columns.find(
+        (c) => c.id === config.targetPropertyId,
+      );
+      out.push({
+        propertyId: column.id,
+        relationPropertyId: config.relationPropertyId,
+        targetPropertyId: config.targetPropertyId,
+        fn: config.fn,
+        targetType: targetColumn?.type,
+      });
+    }
+    return out;
+  }, [rollupColumns, columns, databasesById]);
+
+  const { getValue: getRollupValue } = useRollupValues(
+    loadedRowIds,
+    rollupRequests,
+  );
+
+  // --- Calcular (agregado no rodapé da coluna) ----------------------------
+  /** Colunas numéricas com uma função de cálculo configurada. */
+  const calcColumns = useMemo(
+    () => columns.filter((c) => c.type === "number" && c.calculate),
+    [columns],
+  );
+  /** Uma requisição por coluna calculada (o rodapé é uma linha por coluna). */
+  const calcConfigs = useMemo<ColumnAggregateRequest[]>(() => {
+    const out: ColumnAggregateRequest[] = [];
+    for (const column of calcColumns) {
+      if (column.calculate) out.push({ columnId: column.id, fn: column.calculate });
+    }
+    return out;
+  }, [calcColumns]);
+
+  const { getValue: getColumnAggregate } = useColumnAggregates({
+    databaseId,
+    configs: calcConfigs,
+    search: debouncedQuery,
+    filters: serverFilters,
+    revision: dataRevision,
+  });
+
   /**
-   * Calcula a largura da coluna "fantasma" da tabela: o espa�o que sobra no
-   * container rol�vel depois de descontar a soma das colunas vis�veis (e a
-   * coluna de a��es). Isso estica a tabela at� o fim da tela � as linhas
-   * horizontais passam a cobrir toda a largura � sem distorcer as colunas.
-   * Quando as colunas j� ultrapassam o container, a fantasma fica com 0 e o
+   * Linhas filtradas para as visões que carregam o conjunto completo
+   * (Kanban/Gráfico). Na Tabela o filtro roda no servidor. O filtro de relação
+   * usa os vínculos (`getTargets`), não mais `values`.
+   */
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return allRows.filter((r) => {
+      // Linhas recém-criadas permanecem visíveis (mesmo fora do filtro/busca).
+      if (pinnedRowIds.has(r.id)) return true;
+      for (const id of filterColumnIds) {
+        const column = columns.find((c) => c.id === id);
+        if (!column) continue;
+        const normalized = normalizeFilter(filterOperators[id], filterValues[id]);
+        const operator =
+          column.type === "relation"
+            ? relationFilterOperator(normalized.operator)
+            : normalized.operator;
+        const value = normalized.value;
+        // Relação: valores vêm dos vínculos.
+        if (column.type === "relation") {
+          const targets = getTargets(r.id, id);
+          const isEmpty = targets.length === 0;
+          if (operator === "relation_is_empty") {
+            if (!isEmpty) return false;
+            continue;
+          }
+          if (operator === "relation_is_not_empty") {
+            if (isEmpty) return false;
+            continue;
+          }
+          if (value === null) continue;
+          const matches = targets.includes(value);
+          if (operator === "relation_is" ? !matches : matches) return false;
+          continue;
+        }
+        const raw = cellOf(r, id);
+        const isEmpty = Array.isArray(raw)
+          ? raw.length === 0
+          : String(raw ?? "") === "";
+        if (operator === "is_empty") {
+          if (!isEmpty) return false;
+          continue;
+        }
+        if (operator === "is_not_empty") {
+          if (isEmpty) return false;
+          continue;
+        }
+        if (value === null) continue;
+        const matches = Array.isArray(raw)
+          ? raw.includes(value)
+          : String(raw ?? "") === value;
+        if (operator === "is" ? !matches : matches) return false;
+      }
+      // Busca textual.
+      if (!q) return true;
+      return Object.values(r.values).some((v) =>
+        (Array.isArray(v) ? v.join(" ") : String(v ?? ""))
+          .toLowerCase()
+          .includes(q),
+      );
+    });
+  }, [
+    allRows,
+    query,
+    pinnedRowIds,
+    filterColumnIds,
+    filterOperators,
+    filterValues,
+    columns,
+    getTargets,
+  ]);
+
+  // --- Virtualização das linhas da tabela --------------------------------
+  /**
+   * Índices das linhas que precisam ficar sempre montadas durante a
+   * virtualização: a que está sendo arrastada, a linha-alvo do drop, a com
+   * menu de célula aberto e a com célula em edição (foco).
+   */
+  const pinnedRowIndexes = useMemo(() => {
+    const ids = new Set<string>();
+    if (draggingRowId) ids.add(draggingRowId);
+    if (rowDropBeforeId) ids.add(rowDropBeforeId);
+    if (openCell) ids.add(openCell.split(":")[0]);
+    if (activeRowId) ids.add(activeRowId);
+    const indexes: number[] = [];
+    tableRows.forEach((r, index) => {
+      if (ids.has(r.id)) indexes.push(index);
+    });
+    return indexes;
+  }, [draggingRowId, rowDropBeforeId, openCell, activeRowId, tableRows]);
+
+  /** Id estável de uma linha pelo índice (chave do virtualizador). */
+  const getRowIdByIndex = useCallback(
+    (index: number) => tableRows[index]?.id ?? `__loading_${index}__`,
+    [tableRows],
+  );
+
+  const {
+    virtualizer: rowsVirtualizer,
+    items: virtualRows,
+    paddingTop: rowsPaddingTop,
+    paddingBottom: rowsPaddingBottom,
+  } = useVirtualTableRows({
+    // +1 item no fim: a linha "carregando" quando ainda há páginas.
+    count: tableRows.length + (tableRowsHasMore ? 1 : 0),
+    scrollRef: tableScrollRef,
+    getRowId: getRowIdByIndex,
+    estimateSize: rowHeight,
+    pinnedIndexes: pinnedRowIndexes,
+    overscan: 10,
+    scrollMargin: tableHeadHeight,
+  });
+
+  /** Nº de colunas do `<tbody>` (gutter + visíveis + ações + fantasma). */
+  const tableColumnCount = visibleColumns.length + 3;
+
+  // Mede a altura do cabeçalho sticky (offset do início da lista no scroll).
+  useLayoutEffect(() => {
+    const h = tableHeadRef.current?.getBoundingClientRect().height ?? 0;
+    setTableHeadHeight((cur) => (Math.abs(cur - h) >= 0.5 ? h : cur));
+  }, [visibleColumns.length, selectedRowIds.size]);
+
+  // Calibra a altura real da linha (fixa) a partir da 1ª <tr> renderizada.
+  useLayoutEffect(() => {
+    const tr = tableScrollRef.current?.querySelector<HTMLTableRowElement>(
+      "tbody tr[data-row-id]",
+    );
+    const h = tr?.getBoundingClientRect().height ?? 0;
+    if (h > 0) setRowHeight((cur) => (Math.abs(cur - h) >= 0.5 ? h : cur));
+  }, [rowHeight, visibleColumns.length, rows.length]);
+
+  // Volta ao topo ao mudar a busca ou os filtros (evita "pular" de posição).
+  useEffect(() => {
+    rowsVirtualizer.scrollToOffset(0);
+  }, [query, filterColumnIds, filterValues, rowsVirtualizer]);
+
+  /**
+   * Calcula a largura da coluna "fantasma" da tabela: o espaço que sobra no
+   * container rolável depois de descontar a soma das colunas visíveis (e a
+   * coluna de ações). Isso estica a tabela até o fim da tela — as linhas
+   * horizontais passam a cobrir toda a largura — sem distorcer as colunas.
+   * Quando as colunas já ultrapassam o container, a fantasma fica com 0 e o
    * `overflow-auto` exibe a rolagem horizontal normalmente.
    */
   useEffect(() => {
@@ -1917,10 +1436,10 @@ function DatabaseTable({
         (sum, c) => sum + columnWidth(c),
         0,
       );
-      const used = columnsWidth + ACTIONS_COLUMN_WIDTH;
+      const used = ROW_GUTTER_WIDTH + columnsWidth + ACTIONS_COLUMN_WIDTH;
       /*
-       * `clientWidth` exclui a barra de rolagem vertical � mede o espa�o �til.
-       * Subtra�mos 1px de folga: com `border-collapse`, o Chromium arredonda a
+       * `clientWidth` exclui a barra de rolagem vertical — mede o espaço útil.
+       * Subtraímos 1px de folga: com `border-collapse`, o Chromium arredonda a
        * largura renderizada da tabela para cima (ex.: `width: 1230px` vira
        * 1230.5px), o que geraria 1px de overflow e uma barra de rolagem
        * horizontal mesmo quando as colunas cabem na tela.
@@ -1940,9 +1459,9 @@ function DatabaseTable({
     // `resizing?.width` entra para acompanhar o arraste em tempo real.
   }, [visibleColumns, columns, resizing]);
 
-  /** Colunas agrup�veis do Kanban (select/status), na ordem das colunas. */
+  /** Colunas agrupáveis do Kanban (select/status), na ordem das colunas. */
   const kanbanColumns = useMemo(() => kanbanGroupColumns(columns), [columns]);
-  /** Coluna efetivamente usada no agrupamento (fallback para a padr�o). */
+  /** Coluna efetivamente usada no agrupamento (fallback para a padrão). */
   const kanbanColumn = useMemo(() => {
     const current = kanbanColumns.find((c) => c.id === kanbanColumnId);
     if (current) return current;
@@ -1951,33 +1470,230 @@ function DatabaseTable({
   }, [kanbanColumns, kanbanColumnId, columns]);
 
   /**
-   * Mant�m `kanbanColumnId` apontando para uma coluna v�lida: se a coluna
-   * escolhida for removida (ou trocada de tipo), volta para a padr�o.
+   * Mantém `kanbanColumnId` apontando para uma coluna válida: se a coluna
+   * escolhida for removida (ou trocada de tipo), volta para a padrão.
    */
   useEffect(() => {
     if (kanbanColumnId && kanbanColumns.some((c) => c.id === kanbanColumnId)) return;
     setKanbanColumnId(defaultKanbanColumnId(columns));
   }, [kanbanColumnId, kanbanColumns, columns]);
 
-  /** Visualiza��o ativa (fallback para a primeira se o id n�o existir mais). */
+  /** Visualização ativa (fallback para a primeira se o id não existir mais). */
   const activeView = useMemo(
     () => views.find((v) => v.id === activeViewId) ?? views[0],
     [views, activeViewId],
   );
 
+  /**
+   * Início da janela de abas visíveis. Desloca a janela para garantir que a
+   * visualização ativa fique sempre visível.
+   */
+  const activeViewIndex = Math.max(
+    0,
+    views.findIndex((v) => v.id === activeView.id),
+  );
+  const visibleViewsStart = Math.max(
+    0,
+    Math.min(
+      activeViewIndex - visibleViewCount + 1,
+      views.length - visibleViewCount,
+    ),
+  );
+  const visibleViews = views.slice(
+    visibleViewsStart,
+    visibleViewsStart + visibleViewCount,
+  );
+
+  /** Quantas visualizações ficam fora do cabeçalho (acessíveis pelo "Mais"). */
+  const hiddenViewsCount = views.length - visibleViews.length;
+
+  /** Visualizações filtradas pela busca do popover "Mais". */
+  const filteredOverflowViews = views.filter((view) =>
+    view.name.toLowerCase().includes(overflowViewsQuery.trim().toLowerCase()),
+  );
+
+  // Fecha o menu da visualização quando a aba deixa de estar visível.
+  useEffect(() => {
+    if (!viewMenuId) return;
+    if (!visibleViews.some((v) => v.id === viewMenuId)) {
+      setViewMenuId(null);
+    }
+  }, [viewMenuId, views, visibleViewsStart, visibleViewCount]);
+
   function updateCell(rowId: string, columnId: string, value: CellValue) {
-    onUpdateCell(databaseId, rowId, columnId, value);
+    const previous = tableRows.find((r) => r.id === rowId)?.values;
+    // Reflete a edição na lista paginada; em erro, reverte só esta linha.
+    patchTableRows((prevRows) =>
+      prevRows.map((r) =>
+        r.id === rowId ? { ...r, values: { ...r.values, [columnId]: value } } : r,
+      ),
+    );
+    // Título mudou: os chips de relação que apontam para esta linha ficam stale.
+    if (titleColumnOf(columns)?.id === columnId) invalidateRelatedRows([rowId]);
+    // Se a coluna for alvo de rollup em alguma tabela, os rollups que a agregam
+    // ficam stale; senão, só os rollups da própria linha.
+    const isRollupTarget = allDatabases.some((db) =>
+      db.columns.some(
+        (c) => c.type === "rollup" && c.rollup?.targetPropertyId === columnId,
+      ),
+    );
+    // `staleRollupValues` mantém o valor visível enquanto recalcula (sem piscar).
+    if (isRollupTarget) staleRollupValues();
+    else staleRollupValues([rowId]);
+    // O rodapé ("Calcular") depende dos valores: recalcula (agrupado no hook).
+    setDataRevision((r) => r + 1);
+    void Promise.resolve(onUpdateCell(databaseId, rowId, columnId, value)).catch(
+      () => {
+        if (!previous) return;
+        patchTableRows((prevRows) =>
+          prevRows.map((r) =>
+            r.id === rowId ? { ...r, values: previous } : r,
+          ),
+        );
+        // Revertida a edição, o rodapé volta ao valor do servidor.
+        setDataRevision((r) => r + 1);
+      },
+    );
   }
 
-  /** Aplica um patch na configura��o do gr�fico (formato/categoria/valor). */
-  function updateChartConfig(patch: Partial<ChartConfig>) {
-    setChartConfig((prev) => ({ ...prev, ...patch }));
+  /**
+   * Aplica a diferença entre os alvos atuais e a nova lista de uma relação,
+   * chamando as RPCs de vínculo (`relation_link_add`/`relation_link_remove`).
+   * Atualiza o cache do hook de forma otimista; em erro, invalida para
+   * recarregar do servidor (revertendo a UI).
+   */
+  function applyRelationSelection(
+    rowId: string,
+    columnId: string,
+    next: string[],
+  ) {
+    const current = getTargets(rowId, columnId);
+    const currentSet = new Set(current);
+    const nextSet = new Set(next);
+    const added = next.filter((id) => !currentSet.has(id));
+    const removed = current.filter((id) => !nextSet.has(id));
+    if (added.length === 0 && removed.length === 0) return;
+
+    // Otimista: reflete a nova lista imediatamente.
+    setTargets(rowId, columnId, next);
+    // Os rollups desta linha dependem dos vínculos: invalida para recalcular.
+    invalidateRollupValues([rowId]);
+
+    void (async () => {
+      try {
+        // Remoções antes das adições: em relação "um item", trocar o alvo
+        // remove o antigo e só então insere o novo (senão a RPC de limite
+        // rejeitaria a inserção).
+        for (const id of removed) await removeRelationLink(columnId, rowId, id);
+        for (const id of added) await addRelationLink(columnId, rowId, id);
+        // Bidirecional: o espelho muda os vínculos do **alvo** (a origem já está
+        // atualizada de forma otimista, então não é invalidada para não piscar).
+        invalidateRelationLinks([...added, ...removed]);
+        invalidateRollupValues([rowId, ...added, ...removed]);
+      } catch (err) {
+        onError((err as Error).message || "Falha ao salvar relação");
+        invalidateRelationLinks([rowId, ...added, ...removed]);
+      }
+    })();
+  }
+
+  /** Adiciona/remove um único vínculo (usado pelo "x" do chip). */
+  function toggleRelationLink(rowId: string, columnId: string, targetId: string, add: boolean) {
+    const current = getTargets(rowId, columnId);
+    const next = add
+      ? [...current, targetId]
+      : current.filter((id) => id !== targetId);
+    applyRelationSelection(rowId, columnId, next);
+  }
+
+  /**
+   * Abre as **configurações da tabela** (aba "Editar propriedades") para escolher
+   * o database de destino de uma relação ainda sem alvo — usado ao clicar na
+   * célula de uma coluna de relação sem destino.
+   */
+  function openRelationSettings() {
+    setSettingsInitialView("edit");
+    setOpenColumnEditor(null);
+    setOpenHeaderTypeMenu(null);
+    setOpenPropEditMenu(null);
+    setOpenNumberFormatMenu(null);
+    setOpenDecimalsMenu(null);
+    setOpenCalcMenu(null);
+    setOpenIconPicker(null);
+    setOpenCell(null);
+    setRelationCellPos(null);
+    setIsSettingsOpen(true);
+  }
+
+  /**
+   * Salva a configuração de uma relação (limite, bidirecional + espelho). Cria
+   * o espelho via RPC e recarrega origem e destino para refletir a coluna.
+   */
+  function saveRelationConfig(
+    column: Column,
+    config: { limit: RelationLimit; bidirectional: boolean; reverseName: string },
+  ) {
+    const relationDatabaseId = column.relationDatabaseId;
+    if (!relationDatabaseId) return;
+    void (async () => {
+      try {
+        await createRelationProperty({
+          databaseId,
+          columnId: column.id,
+          name: column.name,
+          relationDatabaseId,
+          limit: config.limit,
+          bidirectional: config.bidirectional,
+          reverseColumnId: column.reversePropertyId,
+          reverseName: config.reverseName,
+        });
+        const [origin, target] = await Promise.all([
+          fetchDatabaseById(databaseId),
+          fetchDatabaseById(relationDatabaseId),
+        ]);
+        if (origin) onPatchDatabase(databaseId, { columns: origin.columns });
+        if (target) onPatchDatabase(relationDatabaseId, { columns: target.columns });
+      } catch (err) {
+        onError((err as Error).message || "Falha ao salvar a relação");
+      }
+    })();
+  }
+
+  /** Salva a configuração de um rollup (persistida nas colunas do database). */
+  function saveRollupConfig(column: Column, config: RollupConfig | null) {
+    updateColumn(column.id, { rollup: config ?? undefined });
+  }
+
+  /** Remove uma propriedade de relação via RPC (coluna + vínculos + espelho). */
+  function removeRelationColumn(column: Column) {
+    const relationDatabaseId = column.relationDatabaseId;
+    setColumns((prev) => prev.filter((c) => c.id !== column.id));
+    setOpenColumnEditor(null);
+    invalidateRelationLinks();
+    invalidateRollupValues();
+    void (async () => {
+      try {
+        await deleteRelationProperty(databaseId, column.id);
+        // Recarrega o destino (o espelho foi removido) e a origem.
+        const [origin, target] = await Promise.all([
+          fetchDatabaseById(databaseId),
+          relationDatabaseId
+            ? fetchDatabaseById(relationDatabaseId)
+            : Promise.resolve(null),
+        ]);
+        if (origin) onPatchDatabase(databaseId, { columns: origin.columns });
+        if (target && relationDatabaseId)
+          onPatchDatabase(relationDatabaseId, { columns: target.columns });
+      } catch (err) {
+        onError((err as Error).message || "Falha ao excluir a relação");
+      }
+    })();
   }
 
   /**
    * Move um card no Kanban: atualiza o valor da coluna de agrupamento e recoloca
    * a linha na ordem global (logo antes de `beforeRowId`, ou no fim quando null).
-   * A nova ordem � persistida como `position` de cada linha.
+   * A nova ordem é persistida como `position` de cada linha.
    */
   function moveCard(
     rowId: string,
@@ -2005,9 +1721,17 @@ function DatabaseTable({
     const id = newColumnId();
     setColumns((prev) => [...prev, { id, name: "Nova coluna", type: "text" }]);
     setOpenColumnEditor(id);
+    // Rola a tabela para revelar a nova coluna no cabeçalho.
+    setScrollToColumnsEnd(true);
   }
 
   function removeColumn(id: string) {
+    const column = columns.find((c) => c.id === id);
+    // Relação: a coluna, os vínculos e o espelho são removidos por RPC.
+    if (column?.type === "relation") {
+      removeRelationColumn(column);
+      return;
+    }
     setColumns((prev) => prev.filter((c) => c.id !== id));
     // Zera os valores da coluna removida em todas as linhas (persiste cada uma).
     for (const row of rows) {
@@ -2018,9 +1742,9 @@ function DatabaseTable({
   }
 
   /**
-   * Redimensiona uma coluna arrastando a al�a na borda do cabe�alho.
-   * Durante o arraste s� atualiza o preview local; ao soltar, persiste a largura
-   * junto da defini��o de colunas (mesmo fluxo de `onUpdateColumns`).
+   * Redimensiona uma coluna arrastando a alça na borda do cabeçalho.
+   * Durante o arraste só atualiza o preview local; ao soltar, persiste a largura
+   * junto da definição de colunas (mesmo fluxo de `onUpdateColumns`).
    */
   function startColumnResize(
     event: ReactPointerEvent<HTMLDivElement>,
@@ -2057,17 +1781,197 @@ function DatabaseTable({
     window.addEventListener("pointerup", onUp);
   }
 
-  function addRow(initialValues?: Record<string, CellValue>) {
-    onAddRow(databaseId, initialValues);
+  function addRow(
+    initialValues?: Record<string, CellValue>,
+    afterRowId?: string | null,
+    focusNewRow = false,
+  ) {
+    // A linha nova nasce vazia: se houver busca ativa ela não casa com o filtro
+    // e ficaria escondida. Em vez de limpar a busca, "fixa" a linha criada para
+    // que ela apareça, preservando o texto da busca.
+    // Posição calculada entre os vizinhos **carregados** (gaps de 1000) — o
+    // wrapper não tem mais a lista completa de linhas.
+    let position: number | null = null;
+    if (afterRowId) {
+      const at = tableRows.findIndex((r) => r.id === afterRowId);
+      if (at >= 0) {
+        position = gapPositionBetween(tableRows[at], tableRows[at + 1] ?? null);
+      }
+    }
+    return onAddRow(databaseId, initialValues, afterRowId, position).then((created) => {
+      if (created) {
+        setPinnedRowIds((prev) => {
+          const next = new Set(prev);
+          next.add(created.id);
+          return next;
+        });
+        if (focusNewRow) setPendingFocusRowId(created.id);
+        // Reflete a nova linha na lista paginada (sem recarregar a página).
+        patchTableRows((prevRows) => {
+          const at = afterRowId
+            ? prevRows.findIndex((r) => r.id === afterRowId)
+            : -1;
+          const nextRows = [...prevRows];
+          nextRows.splice(at === -1 ? nextRows.length : at + 1, 0, created);
+          return nextRows;
+        });
+        // Nova linha: o rodapé ("Calcular") recalcula (contagens/somas).
+        setDataRevision((r) => r + 1);
+      }
+      return created;
+    });
   }
 
-  function removeRow(id: string) {
-    onDeleteRow(databaseId, id);
+  /** Marca/desmarca a seleção de uma linha (checkbox da coluna gutter). */
+  function toggleRowSelection(id: string) {
+    setSelectedRowIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  /** Marca/desmarca todas as linhas (checkbox do cabeçalho da gutter). */
+  function toggleAllRowsSelection() {
+    setSelectedRowIds((prev) =>
+      prev.size > 0 && prev.size === tableRows.length
+        ? new Set()
+        : new Set(tableRows.map((r) => r.id)),
+    );
   }
 
   /**
-   * Cria uma nova visualiza��o do database (do tipo escolhido no menu "+"),
-   * d� um nome �nico ("Tabela 2", "Kanban 2"...) e a ativa em seguida.
+   * Reordena por arraste **na Tabela**: move `draggedId` para antes de
+   * `beforeId` dentro da lista **carregada** e grava **uma** posição (o gap
+   * entre os vizinhos). Sem espaço entre os vizinhos, renumera a janela
+   * carregada (caso raro, após muitos inserts no mesmo ponto).
+   */
+  function moveRow(draggedId: string, beforeId: string | null) {
+    if (draggedId === beforeId) return;
+    const loaded = tableRows;
+    const from = loaded.findIndex((r) => r.id === draggedId);
+    if (from === -1) return;
+    const moved = loaded[from];
+    const rest = loaded.filter((r) => r.id !== draggedId);
+    const at = beforeId ? rest.findIndex((r) => r.id === beforeId) : -1;
+    const insertAt = at === -1 ? rest.length : at;
+    const prevRow = insertAt > 0 ? rest[insertAt - 1] : null;
+    const nextRow = insertAt < rest.length ? rest[insertAt] : null;
+
+    const position = gapPositionBetween(prevRow, nextRow);
+    if (position === null) {
+      // Gaps esgotados entre os vizinhos: renumera a janela carregada.
+      const renumbered = [...rest];
+      renumbered.splice(insertAt, 0, moved);
+      const updates = renumbered.map((r, index) => ({
+        id: r.id,
+        position: (index + 1) * 1000,
+      }));
+      onRowsReordered(databaseId, updates);
+      patchTableRows((prevRows) => {
+        const byId = new Map(prevRows.map((r) => [r.id, r]));
+        const ordered: DbRow[] = [];
+        for (const u of updates) {
+          const found = byId.get(u.id);
+          if (found) ordered.push({ ...found, position: u.position });
+        }
+        return ordered;
+      });
+      return;
+    }
+
+    onRowsReordered(databaseId, [{ id: draggedId, position }]);
+    patchTableRows((prevRows) => {
+      const without = prevRows.filter((r) => r.id !== draggedId);
+      const idx = beforeId ? without.findIndex((r) => r.id === beforeId) : -1;
+      const nextRows = [...without];
+      nextRows.splice(idx === -1 ? nextRows.length : idx, 0, {
+        ...moved,
+        position,
+      });
+      return nextRows;
+    });
+  }
+
+  // Foca o primeiro campo da linha recém-criada pelo botão "+" da gutter.
+  // Com a virtualização, a linha pode estar fora da área renderizada: nesse
+  // caso rola até ela (o efeito roda de novo quando a linha estiver montada).
+  useEffect(() => {
+    if (!pendingFocusRowId) return;
+    const input = tableScrollRef.current?.querySelector<HTMLInputElement>(
+      `tr[data-row-id="${pendingFocusRowId}"] td:nth-child(2) input`,
+    );
+    if (!input) {
+      const index = tableRows.findIndex((r) => r.id === pendingFocusRowId);
+      if (index >= 0) rowsVirtualizer.scrollToIndex(index, { align: "auto" });
+      return;
+    }
+    input.focus();
+    setPendingFocusRowId(null);
+  }, [pendingFocusRowId, tableRows, rowsVirtualizer, virtualRows]);
+
+  // Carrega a próxima página quando o último item virtual se aproxima do fim
+  // (~15 linhas). O hook garante uma requisição por vez.
+  useEffect(() => {
+    if (!tableRowsHasMore || tableRowsLoadingMore) return;
+    const last = virtualRows[virtualRows.length - 1];
+    if (!last) return;
+    if (last.index >= tableRows.length - 15) fetchNextRowsPage();
+  }, [
+    virtualRows,
+    tableRows.length,
+    tableRowsHasMore,
+    tableRowsLoadingMore,
+    fetchNextRowsPage,
+  ]);
+
+  /** Marca a linha com foco (célula em edição) para mantê-la montada. */
+  function handleTableFocus(event: ReactFocusEvent<HTMLTableElement>) {
+    const rowEl = (event.target as HTMLElement).closest("tr[data-row-id]");
+    const id = rowEl?.getAttribute("data-row-id") ?? null;
+    setActiveRowId((cur) => (cur === id ? cur : id));
+  }
+
+  /** Limpa a linha ativa quando o foco sai da tabela. */
+  function handleTableBlur(event: ReactFocusEvent<HTMLTableElement>) {
+    const next = event.relatedTarget as Node | null;
+    if (next && event.currentTarget.contains(next)) return;
+    setActiveRowId(null);
+  }
+
+  /**
+   * Invalida o título cacheado da linha que estava em edição ao trocar de
+   * linha/foco (uma vez por linha, e não a cada tecla digitada). Assim as
+   * células de relação que apontam para ela recarregam o título atualizado.
+   */
+  useEffect(() => {
+    if (!activeRowId) return;
+    const rowId = activeRowId;
+    return () => invalidateRelatedRows([rowId]);
+  }, [activeRowId]);
+
+  function removeRow(id: string) {
+    const removed = tableRows.find((r) => r.id === id);
+    if (!removed) return;
+    patchTableRows((prevRows) => prevRows.filter((r) => r.id !== id));
+    // Referências a esta linha passam a exibir "linha removida".
+    invalidateRelatedRows([id]);
+    // Linha removida: o rodapé ("Calcular") recalcula.
+    setDataRevision((r) => r + 1);
+    // Em erro, reinsere a linha na lista carregada (o wrapper não tem a lista).
+    void Promise.resolve(onDeleteRow(databaseId, id, removed)).catch(() => {
+      patchTableRows((prevRows) =>
+        prevRows.some((r) => r.id === id) ? prevRows : [...prevRows, removed],
+      );
+      // Revertida a exclusão, o rodapé volta ao valor do servidor.
+      setDataRevision((r) => r + 1);
+    });
+  }
+
+  /**
+   * Cria uma nova visualização do database (do tipo escolhido no menu "+"),
+   * dá um nome único ("Tabela 2", "Kanban 2"...) e a ativa em seguida.
    */
   function createView(type: DbViewType) {
     const baseName = viewTypeMeta(type).label;
@@ -2079,7 +1983,14 @@ function DatabaseTable({
     setViewsMenuOpen(false);
   }
 
-  /** Remove uma visualiza��o criada (nunca a �ltima restante). */
+  /** Altera o tipo (layout) da visualização ativa. */
+  function changeViewType(type: DbViewType) {
+    setViews((prev) =>
+      prev.map((v) => (v.id === activeView.id ? { ...v, type } : v)),
+    );
+  }
+
+  /** Remove uma visualização criada (nunca a última restante). */
   function removeView(id: string) {
     setViews((prev) => {
       if (prev.length <= 1) return prev;
@@ -2091,7 +2002,87 @@ function DatabaseTable({
     });
   }
 
-  /** Renomeia uma visualiza��o (nome vazio cai de volta para o r�tulo do tipo). */
+  /**
+   * Abre/fecha o menu da aba ativa (clique na aba já selecionada), posicionando-o
+   * abaixo dela. Renderizado via portal para não ser recortado pela tabela.
+   */
+  function toggleViewMenu(id: string, anchor: HTMLElement) {
+    if (viewMenuId === id) {
+      setViewMenuId(null);
+      return;
+    }
+    const rect = anchor.getBoundingClientRect();
+    const width = 208;
+    const margin = 8;
+    const left = Math.min(
+      Math.max(margin, rect.left),
+      Math.max(margin, window.innerWidth - width - margin),
+    );
+    setViewMenuPos({ top: rect.bottom + 4, left });
+    setViewMenuId(id);
+  }
+
+  /**
+   * Abre/fecha o popover "Mais", posicionando-o abaixo do botão. Renderizado
+   * via portal (fora do container rolável) para não ser recortado.
+   */
+  function toggleOverflowViews() {
+    if (overflowViewsOpen) {
+      setOverflowViewsOpen(false);
+      setOverflowNewOpen(false);
+      return;
+    }
+    setOverflowViewsQuery("");
+    setOverflowNewOpen(false);
+    const rect = overflowViewsBtnRef.current?.getBoundingClientRect();
+    if (rect) {
+      const width = 224;
+      const margin = 8;
+      const left = Math.min(
+        Math.max(margin, rect.left),
+        Math.max(margin, window.innerWidth - width - margin),
+      );
+      setOverflowViewsPos({ top: rect.bottom + 6, left });
+    }
+    setOverflowViewsOpen(true);
+  }
+
+  /**
+   * Abre/fecha o submenu "Nova visualização", posicionando-o à esquerda do
+   * botão (dentro do popover "Mais"). Renderizado via portal.
+   */
+  function toggleOverflowNew() {
+    if (overflowNewOpen) {
+      setOverflowNewOpen(false);
+      return;
+    }
+    const rect = overflowNewBtnRef.current?.getBoundingClientRect();
+    if (rect) {
+      const width = 176;
+      const margin = 8;
+      const left = Math.max(margin, rect.left - width - 6);
+      setOverflowNewPos({ top: rect.top, left });
+    }
+    setOverflowNewOpen(true);
+  }
+
+  /** Reordena as visualizações: move `draggedId` para antes de `beforeId`
+   * (ou para o fim quando `beforeId` é null). */
+  function moveView(draggedId: string, beforeId: string | null) {
+    setViews((prev) => {
+      if (draggedId === beforeId) return prev;
+      const dragged = prev.find((v) => v.id === draggedId);
+      if (!dragged) return prev;
+      const without = prev.filter((v) => v.id !== draggedId);
+      const index = beforeId ? without.findIndex((v) => v.id === beforeId) : -1;
+      const insertAt = index === -1 ? without.length : index;
+      const next = [...without];
+      next.splice(insertAt, 0, dragged);
+      return next;
+    });
+  }
+
+  /** Renomeia uma visualização (nome vazio cai de volta para o rótulo do tipo). */
   function renameView(id: string, name: string) {
     const trimmed = name.trim();
     setViews((prev) =>
@@ -2107,11 +2098,11 @@ function DatabaseTable({
     updateCell(rowId, PAGE_CONTENT_KEY, content);
   }
 
-  /** Cria e adiciona um novo modelo de p�gina. */
+  /** Cria e adiciona um novo modelo de página. */
   function addTemplate(name: string, content: string, recurrence: Recurrence | null) {
     onAddTemplate(
       databaseId,
-      name.trim() || "Modelo sem t�tulo",
+      name.trim() || "Modelo sem título",
       content,
       recurrence,
     );
@@ -2134,8 +2125,8 @@ function DatabaseTable({
   }
 
   /**
-   * Cria uma nova op��o para uma coluna select/multi_select e persiste na coluna.
-   * Retorna a op��o criada (ou a j� existente com o mesmo r�tulo) para uso imediato.
+   * Cria uma nova opção para uma coluna select/multi_select e persiste na coluna.
+   * Retorna a opção criada (ou a já existente com o mesmo rótulo) para uso imediato.
    */
   function createOptionForColumn(column: Column, label: string): SelectOption | null {
     const trimmed = label.trim();
@@ -2149,7 +2140,7 @@ function DatabaseTable({
       id: newOptionId(),
       label: trimmed,
       color: OPTION_COLORS[base.length % OPTION_COLORS.length],
-      // Novas op��es de status entram na primeira categoria ("A fazer").
+      // Novas opções de status entram na primeira categoria ("A fazer").
       ...(column.type === "status" ? { category: "todo" as StatusCategory } : {}),
     };
     setColumns((prev) =>
@@ -2160,7 +2151,7 @@ function DatabaseTable({
     return option;
   }
 
-  /** Cria a op��o digitada no menu da c�lula e j� a aplica (select/multi_select). */
+  /** Cria a opção digitada no menu da célula e já a aplica (select/multi_select). */
   function createOptionFromCell(row: DbRow, column: Column) {
     const option = createOptionForColumn(column, newOptionText);
     setNewOptionText("");
@@ -2178,18 +2169,18 @@ function DatabaseTable({
   }
 
 
-  /** Renderiza a c�lula de uma linha conforme o tipo da coluna. */
+  /** Renderiza a célula de uma linha conforme o tipo da coluna. */
   function renderCell(row: DbRow, column: Column, isFirst: boolean) {
     const value = cellOf(row, column.id);
     const pageOpen = openRowPage === row.id;
 
-    /** Bot�o "abrir p�gina" (aparece no hover, na primeira coluna). */
+    /** Botão "abrir página" (aparece no hover, na primeira coluna). */
     const openPageButton = isFirst ? (
       <button
         type="button"
         onClick={() => setOpenRowPage(pageOpen ? null : row.id)}
-        aria-label={pageOpen ? "Fechar p�gina" : "Abrir p�gina"}
-        title={pageOpen ? "Fechar p�gina" : "Abrir p�gina"}
+        aria-label={pageOpen ? "Fechar página" : "Abrir página"}
+        title={pageOpen ? "Fechar página" : "Abrir página"}
         className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground group-hover:opacity-100"
       >
         <Maximize2 className="h-3.5 w-3.5" />
@@ -2210,7 +2201,6 @@ function DatabaseTable({
           }
         >
           <div className="flex items-center gap-1">
-            {openPageButton}
             <button
               type="button"
               data-cell-menu-trigger
@@ -2221,6 +2211,7 @@ function DatabaseTable({
                 <Chip option={current} />
               ) : null}
             </button>
+            {openPageButton}
           </div>
           {openCell === cellKey ? (
             <div
@@ -2250,8 +2241,8 @@ function DatabaseTable({
                       createOptionFromCell(row, column);
                     }
                   }}
-                  placeholder="Criar op��o�"
-                  aria-label={`Criar nova op��o em ${column.name}`}
+                  placeholder="Criar opção…"
+                  aria-label={`Criar nova opção em ${column.name}`}
                   className="w-full rounded bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus:bg-accent"
                 />
               </div>
@@ -2275,7 +2266,6 @@ function DatabaseTable({
           }
         >
           <div className="flex items-center gap-1">
-            {openPageButton}
             <button
               type="button"
               data-cell-menu-trigger
@@ -2289,6 +2279,7 @@ function DatabaseTable({
                 })
               )}
             </button>
+            {openPageButton}
           </div>
           {openCell === cellKey ? (
             <div
@@ -2318,13 +2309,184 @@ function DatabaseTable({
                       createOptionFromCell(row, column);
                     }
                   }}
-                  placeholder="Criar op��o�"
-                  aria-label={`Criar nova op��o em ${column.name}`}
+                  placeholder="Criar opção…"
+                  aria-label={`Criar nova opção em ${column.name}`}
                   className="w-full rounded bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus:bg-accent"
                 />
               </div>
             </div>
           ) : null}
+        </td>
+      );
+    }
+
+    if (column.type === "relation") {
+      // Os vínculos vêm de `relation_links` (via hook), não mais de `values`.
+      // Obs.: a busca textual do servidor casa os **ids** das linhas, não os
+      // títulos das linhas alvo (follow-up).
+      const ids = getTargets(row.id, column.id);
+      const targetId = column.relationDatabaseId ?? null;
+      const target = targetId ? databasesById.get(targetId) : undefined;
+      const cellKey = `${row.id}:${column.id}`;
+
+      // Sem alvo configurado (ou alvo excluído): clicar abre as configurações da
+      // tabela para escolher o database de destino da relação.
+      if (!targetId || !target) {
+        return (
+          <td className="px-3 py-1.5">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={openRelationSettings}
+                title="Escolher o database da relação"
+                className="min-w-0 flex-1 truncate rounded px-1 py-1 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                {targetId ? "Database removido — escolher outro" : "Escolha um database"}
+              </button>
+              {openPageButton}
+            </div>
+          </td>
+        );
+      }
+
+      /** Abre/fecha o seletor de itens, ancorado na célula. */
+      const toggleEditor = (rect: DOMRect) => {
+        const nextKey = openCell === cellKey ? null : cellKey;
+        setOpenCell(nextKey);
+        if (!nextKey) {
+          setRelationCellPos(null);
+          return;
+        }
+        // Mantém o popover dentro da viewport (tem ~22rem de altura): se não
+        // houver espaço abaixo da célula, abre acima dela.
+        const height = 352;
+        const below = rect.bottom + 4;
+        setRelationCellPos({
+          top:
+            below + height <= window.innerHeight
+              ? below
+              : Math.max(8, rect.top - height - 4),
+          left: Math.min(
+            Math.max(8, rect.left),
+            Math.max(8, window.innerWidth - 300),
+          ),
+        });
+      };
+
+      return (
+        <td
+          data-relation-cell-trigger
+          className="relative cursor-pointer px-3 py-1.5"
+          onClick={(e) => {
+            const t = e.target as HTMLElement | null;
+            // Cliques nos chips abrem o item; em controles, não abrem o seletor.
+            if (t?.closest("button, a, input, [data-relation-chip]")) return;
+            toggleEditor(e.currentTarget.getBoundingClientRect());
+          }}
+        >
+          <div className="flex items-center gap-1">
+            <div className="flex w-full min-w-0 items-center rounded pl-1 pr-2 py-1">
+              <RelationCell
+                databaseId={targetId}
+                columns={target.columns}
+                ids={ids}
+                onOpenItem={(rowId, anchorEl) => {
+                  // Fecha o seletor da célula ao abrir o item referenciado.
+                  setOpenCell(null);
+                  setRelationCellPos(null);
+                  setOpenItem({ databaseId: targetId, rowId, anchorEl });
+                }}
+                onRemove={(targetRowId) =>
+                  toggleRelationLink(row.id, column.id, targetRowId, false)
+                }
+              />
+            </div>
+            {openPageButton}
+          </div>
+          {openCell === cellKey && relationCellPos
+            ? createPortal(
+                <div
+                  data-cell-menu
+                  data-relation-cell-popover
+                  className="fixed z-50 max-h-[22rem] w-72 overflow-hidden rounded-md border bg-popover p-1 shadow-md"
+                  style={{
+                    top: relationCellPos.top,
+                    left: relationCellPos.left,
+                  }}
+                >
+                  <RelationSelect
+                    databaseId={targetId}
+                    columns={target.columns}
+                    value={ids}
+                    multiple={column.limit !== "one"}
+                    onChange={(next) =>
+                      applyRelationSelection(row.id, column.id, next)
+                    }
+                  />
+                </div>,
+                document.body,
+              )
+            : null}
+        </td>
+      );
+    }
+
+    if (column.type === "rollup") {
+      const config = column.rollup;
+      if (!config) {
+        return (
+          <td className="px-3 py-1.5">
+            <div className="flex items-center gap-1">
+              <span className="truncate pl-1 pr-2 py-1 text-sm text-muted-foreground">
+                Configure o rollup
+              </span>
+              {openPageButton}
+            </div>
+          </td>
+        );
+      }
+      const relationColumn = columns.find(
+        (c) => c.id === config.relationPropertyId,
+      );
+      const targetDb = relationColumn?.relationDatabaseId
+        ? databasesById.get(relationColumn.relationDatabaseId)
+        : undefined;
+      const targetColumn = targetDb?.columns.find(
+        (c) => c.id === config.targetPropertyId,
+      );
+      const raw = getRollupValue(row.id, column.id);
+      let display: string;
+      let empty = false;
+      if (raw === null) {
+        display = "…";
+      } else if (Array.isArray(raw)) {
+        empty = raw.length === 0;
+        display = empty ? "—" : raw.join(", ");
+      } else if (raw === "") {
+        empty = true;
+        display = "—";
+      } else if (config.fn === "percent_checked") {
+        display = `${raw}%`;
+      } else if (targetColumn?.type === "number") {
+        const n = parseNumberValue(raw);
+        display = n === null ? String(raw) : formatNumberByColumn(n, targetColumn);
+      } else {
+        display = String(raw);
+      }
+      return (
+        <td className="px-3 py-1.5">
+          <div className="flex items-center gap-1">
+            <span
+              title={display}
+              className={cn(
+                "truncate pl-1 pr-2 py-1 text-sm",
+                empty && "text-muted-foreground",
+              )}
+            >
+              {display}
+            </span>
+            {openPageButton}
+          </div>
         </td>
       );
     }
@@ -2346,16 +2508,15 @@ function DatabaseTable({
               try {
                 withPicker.showPicker?.();
               } catch {
-                /* showPicker pode lan�ar se n�o partir de gesto do usu�rio */
+                /* showPicker pode lançar se não partir de gesto do usuário */
               }
             })
           }
         >
           <div className="flex items-center gap-1">
-            {openPageButton}
-            {/* O input nativo de data cobre toda a c�lula (transparente) para que
+            {/* O input nativo de data cobre toda a célula (transparente) para que
                 o clique em qualquer ponto abra o seletor de data do navegador.
-                A vers�o anterior usava `sr-only`, que impedia abrir o seletor. */}
+                A versão anterior usava `sr-only`, que impedia abrir o seletor. */}
             <div className="relative flex w-full min-w-0 items-center gap-1.5 overflow-hidden rounded pl-1 pr-2 py-1 text-sm">
               <span className={cn("truncate", !dateValue && "text-muted-foreground")}>
                 {dateValue ? formatShortDate(dateValue) : ""}
@@ -2372,13 +2533,14 @@ function DatabaseTable({
                   try {
                     input.showPicker?.();
                   } catch {
-                    /* showPicker pode lan�ar se n�o partir de gesto do usu�rio */
+                    /* showPicker pode lançar se não partir de gesto do usuário */
                   }
                 }}
                 className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
                 aria-label={`Alterar ${column.name}`}
               />
             </div>
+            {openPageButton}
           </div>
         </td>
       );
@@ -2396,7 +2558,6 @@ function DatabaseTable({
           }
         >
           <div className="flex items-center gap-1">
-            {openPageButton}
             <label className="flex w-full cursor-pointer items-center gap-1.5 overflow-hidden rounded pl-1 pr-2 py-1 text-sm">
               <input
                 type="checkbox"
@@ -2408,6 +2569,7 @@ function DatabaseTable({
                 aria-label={`Marcar ${column.name}`}
               />
             </label>
+            {openPageButton}
           </div>
         </td>
       );
@@ -2424,12 +2586,12 @@ function DatabaseTable({
           }
         >
           <div className="flex min-w-0 items-center gap-1 overflow-hidden">
-            {openPageButton}
             <NumberCellInput
               value={value}
               column={column}
               onChange={(next) => updateCell(row.id, column.id, next)}
             />
+            {openPageButton}
           </div>
         </td>
       );
@@ -2447,40 +2609,64 @@ function DatabaseTable({
         }
       >
         <div className="flex min-w-0 items-center gap-1 overflow-hidden">
-          {openPageButton}
           <input
             type="text"
             value={textValue}
             onChange={(e) => updateCell(row.id, column.id, e.target.value)}
             className="w-full min-w-0 rounded bg-transparent pl-1 pr-2 py-1 outline-none focus:outline-none"
           />
+          {openPageButton}
         </div>
       </td>
     );
   }
 
-  /** Modal flutuante (centro da tela) com a p�gina do item aberto. */
-  const openRow = rows.find((r) => r.id === openRowPage) ?? null;
+  /**
+   * Linha do modal da página do item: usa a já carregada (Tabela/Kanban) ou
+   * busca pelo id (`fetchRowById`), já que as linhas não vêm todas de uma vez.
+   */
+  const [openRow, setOpenRow] = useState<DbRow | null>(null);
+  useEffect(() => {
+    if (!openRowPage) {
+      setOpenRow(null);
+      return;
+    }
+    const loaded =
+      tableRows.find((r) => r.id === openRowPage) ??
+      allRows.find((r) => r.id === openRowPage);
+    if (loaded) {
+      setOpenRow(loaded);
+      return;
+    }
+    let cancelled = false;
+    void fetchRowById(openRowPage).then((row) => {
+      if (!cancelled) setOpenRow(row);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [openRowPage, tableRows, allRows]);
 
-  /** T�tulo do card do Kanban: primeira coluna de texto/pessoa (sen�o "Sem t�tulo"). */
+  /** Título do card do Kanban: primeira coluna de texto/pessoa (senão "Sem título"). */
   function cardTitle(row: DbRow): string {
-    const titleColumn =
-      columns.find((c) => c.type === "text") ??
-      columns.find((c) => c.type === "person");
-    if (!titleColumn) return "Sem t�tulo";
+    const titleColumn = titleColumnOf(columns);
+    if (!titleColumn) return "Sem título";
     const value = cellOf(row, titleColumn.id);
     const text = Array.isArray(value) ? value.join(", ") : value;
-    return text.trim() || "Sem t�tulo";
+    return text.trim() || "Sem título";
   }
 
   /**
-   * Renderiza, em modo leitura, o valor de uma propriedade para o rodap� do
+   * Renderiza, em modo leitura, o valor de uma propriedade para o rodapé do
    * card do Kanban (chips para select/status/multi_select, data formatada,
-   * texto simples para os demais). Retorna `null` quando a c�lula est� vazia.
+   * texto simples para os demais). Retorna `null` quando a célula está vazia.
    */
   function renderCardProperty(row: DbRow, column: Column) {
     const value = cellOf(row, column.id);
     if (value === "" || (Array.isArray(value) && value.length === 0)) return null;
+    // Relação e rollup não são exibidos no card do Kanban (não são categoria
+    // nem valor de célula).
+    if (column.type === "relation" || column.type === "rollup") return null;
 
     if (column.type === "select" || column.type === "status") {
       const options = optionsForColumn(column);
@@ -2532,7 +2718,7 @@ function DatabaseTable({
     <>
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
-        {/* Barra de t�tulo do database (estilo Notion) */}
+        {/* Barra de título do database (estilo Notion) */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
           <div className="flex items-center gap-2">
             <button
@@ -2540,7 +2726,7 @@ function DatabaseTable({
               onClick={onBack}
               aria-label="Voltar para a lista de databases"
               title="Voltar"
-              className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              className="flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <ArrowLeft className="h-4 w-4" />
             </button>
@@ -2550,9 +2736,9 @@ function DatabaseTable({
                 onClick={() => setOpenTitleIconPicker((v) => !v)}
                 aria-haspopup="menu"
                 aria-expanded={openTitleIconPicker}
-                aria-label="Escolher �cone do database"
-                title="Escolher �cone"
-                className="flex h-7 w-7 items-center justify-center rounded-md bg-primary/10 hover:bg-primary/20"
+                aria-label="Escolher ícone do database"
+                title="Escolher ícone"
+                className="flex h-[30px] w-[30px] items-center justify-center rounded-md bg-primary/10 hover:bg-primary/20"
               >
                 <TitleIcon className="h-4 w-4 text-primary" />
               </button>
@@ -2571,7 +2757,7 @@ function DatabaseTable({
                     <button
                       type="button"
                       onClick={() => {
-                        onUpdateIcon(databaseId, null);
+                        onUpdateIcon(viewId, null);
                         setOpenTitleIconPicker(false);
                       }}
                       className={cn(
@@ -2580,7 +2766,7 @@ function DatabaseTable({
                       )}
                     >
                       <Table2 className="h-4 w-4" />
-                      Padr�o
+                      Padrão
                     </button>
                     <div className="grid grid-cols-6 gap-1">
                       {ICON_OPTIONS.map((option) => {
@@ -2594,7 +2780,7 @@ function DatabaseTable({
                             aria-label={option.name}
                             aria-pressed={isActive}
                             onClick={() => {
-                              onUpdateIcon(databaseId, option.name);
+                              onUpdateIcon(viewId, option.name);
                               setOpenTitleIconPicker(false);
                             }}
                             className={cn(
@@ -2617,39 +2803,107 @@ function DatabaseTable({
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               className="min-w-0 rounded bg-transparent px-1 text-lg font-semibold outline-none focus:bg-accent"
-              aria-label="T�tulo do database"
+              aria-label="Título do database"
             />
+            {/* Link para o database relacionado: aparece assim que este database
+                tem uma coluna de relação configurada e leva ao destino dela. */}
+            {linkedDatabase ? (
+              <button
+                type="button"
+                onClick={() => onOpenDatabase(linkedDatabase.id)}
+                title={`Ir para o database relacionado: ${linkedDatabase.name}`}
+                aria-label={`Ir para o database relacionado ${linkedDatabase.name}`}
+                className="flex min-w-0 flex-none items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <Link className="h-3.5 w-3.5 shrink-0" />
+                <span className="max-w-[160px] truncate">
+                  {linkedDatabase.name}
+                </span>
+              </button>
+            ) : null}
           </div>
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => {
+                  // Ao mudar a busca, as linhas "fixadas" voltam a ser
+                  // avaliadas pelo filtro normalmente.
+                  setPinnedRowIds(new Set());
+                  setQuery(e.target.value);
+                }}
                 placeholder="Buscar..."
-                className="h-8 w-44 pl-8"
+                className="w-44 pl-8"
               />
+            </div>
+            <div className="relative" ref={filterAnchorRef}>
+              <Button
+                variant="outline"
+                size="icon"
+                data-filter-trigger
+                onClick={() => {
+                  // Sem filtros: abre a lista para escolher propriedades.
+                  // Com filtros: minimiza/expande a barra de filtros.
+                  if (filterColumnIds.length === 0) {
+                    setIsFilterOpen((v) => !v);
+                  } else {
+                    setFiltersCollapsed((v) => !v);
+                  }
+                }}
+                title={
+                  filterColumnIds.length === 0
+                    ? "Filtrar por propriedade"
+                    : filtersCollapsed
+                      ? "Mostrar filtros"
+                      : "Minimizar filtros"
+                }
+                aria-label={
+                  filterColumnIds.length === 0
+                    ? "Filtrar por propriedade"
+                    : filtersCollapsed
+                      ? "Mostrar filtros"
+                      : "Minimizar filtros"
+                }
+                aria-haspopup={filterColumnIds.length === 0 ? "menu" : undefined}
+                aria-expanded={
+                  filterColumnIds.length === 0 ? isFilterOpen : !filtersCollapsed
+                }
+                className={cn(
+                  filterColumnIds.length > 0 &&
+                    "border-destructive/40 bg-destructive/10 text-destructive hover:bg-destructive/20 hover:text-destructive",
+                )}
+              >
+                <SlidersHorizontal className="h-4 w-4" />
+              </Button>
+              {isFilterOpen ? (
+                <div
+                  data-filter-popover
+                  role="menu"
+                  className="absolute right-0 top-full z-50 mt-1 w-56 rounded-md border bg-popover p-1 text-sm shadow-md"
+                >
+                  {renderFilterPropertyList(() => setIsFilterOpen(false))}
+                </div>
+              ) : null}
             </div>
             <div className="relative" ref={templateAnchorRef}>
               <Button
                 variant="outline"
-                size="sm"
-                className="h-8"
+                size="icon"
                 onClick={() => setIsTemplateDialogOpen(true)}
-                title="Criar modelo de p�gina"
+                title="Criar modelo de página"
+                aria-label="Criar modelo de página"
                 data-template-popover-trigger
               >
                 <LayoutTemplate className="h-4 w-4" />
-                Criar modelo
               </Button>
             </div>
             <div className="relative" ref={settingsAnchorRef}>
               <Button
                 variant="outline"
                 size="icon"
-                className="h-8 w-8"
-                aria-label="Configura��es da tabela"
-                title="Configura��es da tabela"
+                aria-label="Configurações da tabela"
+                title="Configurações da tabela"
                 onClick={() => {
                   setSettingsInitialView("menu");
                   setIsSettingsOpen((v) => !v);
@@ -2661,160 +2915,779 @@ function DatabaseTable({
           </div>
         </div>
 
-        {/* �rea rol�vel: tabela */}
-        <div ref={tableScrollRef} className="min-h-0 flex-1 overflow-auto">
-        {/* Abas de view (visualiza��es criadas pelo usu�rio) */}
-        <div className="flex items-center gap-1 border-b px-3 pt-2">
-          {views.map((view) => {
+        {/* Abas de view (visualizações criadas pelo usuário) */}
+        <div
+          ref={viewTabsBarRef}
+          className="relative flex items-center gap-1 border-b px-3 pt-2"
+        >
+          {/* Camada invisível: mede a largura natural das abas (overflow). */}
+          <div
+            data-views-measure
+            aria-hidden
+            className="pointer-events-none invisible absolute inset-0 overflow-hidden"
+          >
+            <div
+              ref={viewTabsMeasureRef}
+              className="absolute left-0 top-0 flex w-max items-center gap-1 whitespace-nowrap"
+            >
+              {views.map((view) => {
+                const MeasureIcon = viewTypeMeta(view.type).icon;
+                return (
+                  <span key={view.id} className="flex flex-none items-center">
+                    <span className="flex max-w-[10rem] flex-none items-center gap-1.5 rounded-t border-b-2 border-transparent px-3 py-1.5 text-sm font-medium">
+                      <MeasureIcon className="h-3.5 w-3.5 flex-none" />
+                      <span className="min-w-0 truncate">{view.name}</span>
+                    </span>
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Abas visíveis no cabeçalho. Só as que cabem inteiras são exibidas
+              (a próxima nunca fica cortada); as demais ficam no botão "Mais". */}
+          <div
+            ref={viewTabsListRef}
+            className="flex min-w-0 items-center gap-1 overflow-hidden"
+          >
+          {visibleViews.map((view) => {
             const meta = viewTypeMeta(view.type);
             const ViewIcon = meta.icon;
             const isActive = view.id === activeView.id;
             const isRenaming = renamingViewId === view.id;
+            const isDragging = draggingViewId === view.id;
+            const showDropBefore =
+              draggingViewId !== null &&
+              draggingViewId !== view.id &&
+              viewDropBeforeId === view.id;
             return (
-              <div key={view.id} className="group/view relative flex items-center">
-                {isRenaming ? (
+              <Fragment key={view.id}>
+                {/* Indicador da posição de inserção durante o arraste */}
+                {showDropBefore ? (
+                  <div className="h-6 w-0.5 flex-none rounded-full bg-primary" />
+                ) : null}
+                <div
+                  draggable={!isRenaming}
+                  onDragStart={(event) => {
+                    event.dataTransfer.setData("text/plain", view.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    setDraggingViewId(view.id);
+                  }}
+                  onDragEnd={() => {
+                    setDraggingViewId(null);
+                    setViewDropBeforeId(null);
+                  }}
+                  onDragOver={(event) => {
+                    if (!draggingViewId) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    // Soltar na metade direita da aba = inserir depois dela.
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const after = event.clientX - rect.left > rect.width / 2;
+                    const nextBefore = after
+                      ? (views[views.indexOf(view) + 1]?.id ?? null)
+                      : view.id;
+                    setViewDropBeforeId((current) =>
+                      current === nextBefore ? current : nextBefore,
+                    );
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const draggedId =
+                      event.dataTransfer.getData("text/plain") || draggingViewId;
+                    const beforeId = viewDropBeforeId;
+                    setDraggingViewId(null);
+                    setViewDropBeforeId(null);
+                    if (draggedId) moveView(draggedId, beforeId);
+                  }}
+                  className={cn(
+                    "group/view relative flex flex-none items-center",
+                    isDragging && "opacity-40",
+                  )}
+                >
+                  {isRenaming ? (
                   <span
                     className={cn(
-                      "flex items-center gap-1.5 rounded-t border-b-2 px-3 py-1 text-sm font-medium",
+                      "flex max-w-[10rem] items-center gap-1.5 whitespace-nowrap rounded-t border-b-2 px-3 py-1.5 text-sm font-medium",
                       isActive
                         ? "border-primary text-foreground"
                         : "border-transparent text-muted-foreground",
                     )}
                   >
                     <ViewIcon className="h-3.5 w-3.5 flex-none" />
-                    <input
-                      autoFocus
-                      defaultValue={view.name}
-                      onFocus={(e) => e.currentTarget.select()}
-                      onBlur={(e) => renameView(view.id, e.currentTarget.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter") {
-                          e.preventDefault();
-                          renameView(view.id, e.currentTarget.value);
-                        } else if (e.key === "Escape") {
-                          e.preventDefault();
-                          setRenamingViewId(null);
-                        }
-                      }}
-                      aria-label="Nome da visualização"
-                      className="w-24 rounded border bg-background px-1 py-0.5 text-sm text-foreground outline-none"
-                    />
+                    {/* O nome invisível reserva a largura da aba; o input fica
+                        sobreposto a ele, sem alterar o tamanho nem empurrar as
+                        demais visualizações. */}
+                    <span className="relative min-w-0">
+                      <span className="invisible block truncate">
+                        {view.name}
+                      </span>
+                      <input
+                        autoFocus
+                        defaultValue={view.name}
+                        onFocus={(e) => e.currentTarget.select()}
+                        onBlur={(e) => renameView(view.id, e.currentTarget.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter") {
+                            e.preventDefault();
+                            renameView(view.id, e.currentTarget.value);
+                          } else if (e.key === "Escape") {
+                            e.preventDefault();
+                            setRenamingViewId(null);
+                          }
+                        }}
+                        aria-label="Nome da visualização"
+                        className="absolute inset-0 w-full rounded bg-transparent text-sm text-foreground outline-none"
+                      />
+                    </span>
                   </span>
                 ) : (
                   <button
                     type="button"
-                    onClick={() => setActiveViewId(view.id)}
-                    onDoubleClick={() => {
-                      setActiveViewId(view.id);
-                      setRenamingViewId(view.id);
+                    onClick={(event) => {
+                      // Clique na aba já selecionada abre o menu (renomear/excluir).
+                      if (isActive) {
+                        toggleViewMenu(view.id, event.currentTarget);
+                      } else {
+                        setActiveViewId(view.id);
+                      }
                     }}
                     aria-pressed={isActive}
-                    title="Clique duplo para renomear"
+                    aria-haspopup={isActive ? "menu" : undefined}
+                    aria-expanded={isActive ? viewMenuId === view.id : undefined}
+                    title="Clique para abrir opções"
                     className={cn(
-                      "flex items-center gap-1.5 rounded-t border-b-2 px-3 py-1.5 text-sm font-medium",
+                      "flex max-w-[10rem] items-center gap-1.5 whitespace-nowrap rounded-t border-b-2 px-3 py-1.5 text-sm font-medium",
                       isActive
                         ? "border-primary text-foreground"
                         : "border-transparent text-muted-foreground hover:bg-accent",
                     )}
                   >
-                    <ViewIcon className="h-3.5 w-3.5" />
-                    {view.name}
+                    <ViewIcon className="h-3.5 w-3.5 flex-none" />
+                    <span className="min-w-0 truncate">{view.name}</span>
                   </button>
                 )}
-                {/* Remove a view (oculto quando h� s� uma). */}
-                {views.length > 1 && !isRenaming ? (
-                  <button
-                    type="button"
-                    onClick={() => removeView(view.id)}
-                    aria-label={`Remover visualiza��o ${view.name}`}
-                    title="Remover visualiza��o"
-                    className="mr-0.5 flex h-4 w-4 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-destructive group-hover/view:opacity-100"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                ) : null}
-              </div>
+                </div>
+              </Fragment>
             );
           })}
-
-          {/* Bot�o "+" para criar uma nova visualiza��o */}
-          <div className="relative">
-            <button
-              type="button"
-              data-views-menu-trigger
-              onClick={() => setViewsMenuOpen((open) => !open)}
-              className="ml-0.5 flex items-center gap-1 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent"
-              aria-label="Nova visualiza��o"
-              title="Nova visualiza��o"
-              aria-expanded={viewsMenuOpen}
-            >
-              <Plus className="h-3.5 w-3.5" />
-            </button>
-
-            {viewsMenuOpen ? (
-              <div
-                data-views-menu
-                className="absolute left-0 top-full z-30 mt-1 w-44 rounded-md border bg-popover p-1 shadow-md"
-              >
-                <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
-                  Nova visualiza��o
-                </div>
-                {VIEW_TYPES.map((option) => {
-                  const OptionIcon = option.icon;
-                  return (
-                    <button
-                      key={option.type}
-                      type="button"
-                      onClick={() => createView(option.type)}
-                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
-                    >
-                      <OptionIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-                      {option.label}
-                    </button>
-                  );
-                })}
-              </div>
-            ) : null}
           </div>
 
-          {/* Seletor da coluna de agrupamento do Kanban (s� no modo Kanban). */}
-          {activeView.type === "kanban" && kanbanColumns.length > 0 ? (
-            <label className="ml-auto flex items-center gap-1.5 pb-1 text-xs text-muted-foreground">
-              Agrupar por
-              <select
-                value={kanbanColumn?.id ?? ""}
-                onChange={(e) => setKanbanColumnId(e.target.value)}
-                className="rounded border bg-background px-1.5 py-1 text-xs text-foreground outline-none"
-                aria-label="Coluna de agrupamento do Kanban"
+          {!viewsCollapsed ? (
+            <div className="relative flex-none">
+              <button
+                type="button"
+                data-views-menu-trigger
+                onClick={() => setViewsMenuOpen((open) => !open)}
+                className="ml-0.5 flex items-center gap-1 rounded px-2 py-1.5 text-sm text-muted-foreground hover:bg-accent"
+                aria-label="Nova visualização"
+                title="Nova visualização"
+                aria-expanded={viewsMenuOpen}
               >
-                {kanbanColumns.map((column) => (
-                  <option key={column.id} value={column.id}>
-                    {column.name}
-                  </option>
-                ))}
-              </select>
-            </label>
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+
+              {viewsMenuOpen ? (
+                <div
+                  data-views-menu
+                  className="absolute left-0 top-full z-30 mt-1 w-44 rounded-md border bg-popover p-1 shadow-md"
+                >
+                  <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    Nova visualização
+                  </div>
+                  {VIEW_TYPES.map((option) => {
+                    const OptionIcon = option.icon;
+                    return (
+                      <button
+                        key={option.type}
+                        type="button"
+                        onClick={() => createView(option.type)}
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+                      >
+                        <OptionIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                        {option.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
           ) : null}
+
+          {/* Popover "Mais" flutuante: renderizado via portal, fora do container
+              rolável, para não ser recortado pelas bordas da tabela. */}
+          {overflowViewsOpen && overflowViewsPos
+            ? createPortal(
+                <>
+                  <div
+                    className="fixed inset-0 z-[60]"
+                    onClick={() => {
+                      setOverflowViewsOpen(false);
+                      setOverflowNewOpen(false);
+                    }}
+                    role="presentation"
+                  />
+                  <div
+                    role="menu"
+                    style={{
+                      top: overflowViewsPos.top,
+                      left: overflowViewsPos.left,
+                    }}
+                    className="fixed z-[70] max-h-[70vh] w-56 overflow-y-auto rounded-lg border bg-popover p-1 shadow-lg"
+                  >
+                    <div className="p-1">
+                      <input
+                        autoFocus
+                        value={overflowViewsQuery}
+                        onChange={(e) => setOverflowViewsQuery(e.target.value)}
+                        placeholder="Buscar visualização..."
+                        aria-label="Buscar visualização"
+                        className="h-[30px] w-full rounded-md border bg-background px-2 text-sm text-foreground outline-none placeholder:text-muted-foreground"
+                      />
+                    </div>
+                    <button
+                      ref={overflowNewBtnRef}
+                      type="button"
+                      onClick={toggleOverflowNew}
+                      aria-haspopup="menu"
+                      aria-expanded={overflowNewOpen}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm font-medium hover:bg-accent"
+                    >
+                      <Plus className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                      Nova visualização
+                    </button>
+                    <div className="my-1 border-t" />
+                    <div className="px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+                      Visualizações
+                    </div>
+                    <ul className="space-y-0.5">
+                      {filteredOverflowViews.map((view) => {
+                        const OptionIcon = viewTypeMeta(view.type).icon;
+                        const isActive = view.id === activeView.id;
+                        return (
+                          <li key={view.id}>
+                            <button
+                              type="button"
+                              role="menuitem"
+                              onClick={() => {
+                                setActiveViewId(view.id);
+                                setOverflowViewsOpen(false);
+                              }}
+                              className={cn(
+                                "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                                isActive && "bg-accent",
+                              )}
+                            >
+                              <OptionIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                              <span className="min-w-0 flex-1 truncate">
+                                {view.name}
+                              </span>
+                              {isActive ? (
+                                <Check className="h-3.5 w-3.5 flex-none text-primary" />
+                              ) : null}
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                    {filteredOverflowViews.length === 0 ? (
+                      <p className="px-2 py-3 text-center text-sm text-muted-foreground">
+                        Nenhuma visualização encontrada.
+                      </p>
+                    ) : null}
+                  </div>
+                </>,
+                document.body,
+              )
+            : null}
+
+          {/* Submenu "Nova visualização" (abre à esquerda do botão, dentro do
+              popover "Mais"). Renderizado via portal para não ser recortado. */}
+          {overflowNewOpen && overflowNewPos
+            ? createPortal(
+                <>
+                  <div
+                    className="fixed inset-0 z-[75]"
+                    onClick={() => setOverflowNewOpen(false)}
+                    role="presentation"
+                  />
+                  <div
+                    role="menu"
+                    style={{ top: overflowNewPos.top, left: overflowNewPos.left }}
+                    className="fixed z-[80] w-44 rounded-lg border bg-popover p-1 shadow-lg"
+                  >
+                    {VIEW_TYPES.map((option) => {
+                      const OptionIcon = option.icon;
+                      return (
+                        <button
+                          key={option.type}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            createView(option.type);
+                            setOverflowNewOpen(false);
+                            setOverflowViewsOpen(false);
+                          }}
+                          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+                        >
+                          <OptionIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </>,
+                document.body,
+              )
+            : null}
+
+          {/* Menu da aba ativa (clique na aba selecionada): renomear/excluir. */}
+          {viewMenuId && viewMenuPos
+            ? createPortal(
+                <>
+                  <div
+                    className="fixed inset-0 z-[60]"
+                    onClick={() => setViewMenuId(null)}
+                    role="presentation"
+                  />
+                  <div
+                    role="menu"
+                    style={{ top: viewMenuPos.top, left: viewMenuPos.left }}
+                    className="fixed z-[70] w-52 rounded-lg border bg-popover p-1 shadow-lg"
+                  >
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        setRenamingViewId(viewMenuId);
+                        setViewMenuId(null);
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent"
+                    >
+                      <Pencil className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                      Renomear
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={views.length <= 1}
+                      onClick={() => {
+                        removeView(viewMenuId);
+                        setViewMenuId(null);
+                      }}
+                      className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10 disabled:pointer-events-none disabled:opacity-50"
+                    >
+                      <Trash2 className="h-3.5 w-3.5 flex-none" />
+                      Excluir visualização
+                    </button>
+                  </div>
+                </>,
+                document.body,
+              )
+            : null}
+
+          {/* Controle à direita: botão "Mais" (visualizações que não cabem). */}
+          <div className="ml-auto flex items-center gap-1">
+            {viewsCollapsed ? (
+              <button
+                ref={overflowViewsBtnRef}
+                type="button"
+                onClick={toggleOverflowViews}
+                aria-haspopup="menu"
+                aria-expanded={overflowViewsOpen}
+                title="Mais visualizações"
+                className="flex flex-none items-center gap-1.5 rounded px-2 py-1.5 text-sm font-medium text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                Mais
+                <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[11px] font-semibold text-foreground">
+                  {hiddenViewsCount}
+                </span>
+              </button>
+            ) : null}
+          </div>
         </div>
 
+        {/* Barra de filtros: botões das propriedades escolhidas no "Filtrar".
+            Pode ser minimizada pelo botão "Filtrar" do cabeçalho (filtros seguem
+            ativos, apenas a barra fica oculta). */}
+        {filterColumnIds.length > 0 && !filtersCollapsed ? (
+          <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2">
+            {filterColumnIds.map((id) => {
+              const column = columns.find((c) => c.id === id);
+              if (!column) return null;
+              const Icon = columnIcon(column);
+              /** Operador + valor normalizados deste filtro. */
+              const normalizedChipFilter = normalizeFilter(
+                filterOperators[id],
+                filterValues[id],
+              );
+              // Relação: converte o operador genérico (inclusive o de filtros
+              // salvos antes dos operadores de relação) para `relation_*`.
+              const chipFilter =
+                column.type === "relation"
+                  ? {
+                      ...normalizedChipFilter,
+                      operator: relationFilterOperator(normalizedChipFilter.operator),
+                    }
+                  : normalizedChipFilter;
+              const isEmptyOperator =
+                chipFilter.operator === "is_empty" ||
+                chipFilter.operator === "is_not_empty" ||
+                chipFilter.operator === "relation_is_empty" ||
+                chipFilter.operator === "relation_is_not_empty";
+              /** Operadores deste tipo de coluna (multi_select = "contém"). */
+              const operatorOptions = filterOperatorsFor(column);
+              // Filtro configurado (com valor — inclusive "" p/ Desmarcadas — ou
+              // operador de vazio) fica vermelho.
+              const active = isEmptyOperator || chipFilter.value !== null;
+              /** Rótulo do operador (é/não é/contém/não contém/está vazio...). */
+              const operatorLabel =
+                operatorOptions.find((o) => o.value === chipFilter.operator)
+                  ?.label ?? "";
+              /** Rótulo do valor (opção resolvida pelo id, ou "Marcado"). */
+              const valueLabel = (() => {
+                if (isEmptyOperator || chipFilter.value === null) return "";
+                if (column.type === "checkbox")
+                  return chipFilter.value === "true"
+                    ? "Marcadas"
+                    : "Desmarcadas";
+                // Relação: o valor é o id de uma linha alvo (título é assíncrono).
+                if (column.type === "relation") return "";
+                const option =
+                  optionsForColumn(column).find(
+                    (o) => o.id === chipFilter.value,
+                  ) ?? tagById(chipFilter.value);
+                return option ? option.label : chipFilter.value;
+              })();
+              /** Database alvo quando a propriedade filtrada é uma relação. */
+              const relationTarget =
+                column.type === "relation" && column.relationDatabaseId
+                  ? databasesById.get(column.relationDatabaseId)
+                  : undefined;
+              /** Texto do chip: ex. "é Em andamento" ou "está vazio". */
+              const chipLabel = isEmptyOperator
+                ? operatorLabel
+                : valueLabel
+                  ? `${operatorLabel} ${valueLabel}`
+                  : "";
+              return (
+                <span key={id} className="relative">
+                  <button
+                    type="button"
+                    data-filter-chip-trigger
+                    onClick={(event) => {
+                      const rect = event.currentTarget.getBoundingClientRect();
+                      setFilterChipId(filterChipId === id ? null : id);
+                      setFilterChipPos({
+                        top: rect.bottom + 4,
+                        left: rect.left,
+                      });
+                    }}
+                    aria-label={`Filtrar ${column.name}`}
+                    title="Filtrar"
+                    className={cn(
+                      "flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors",
+                      active
+                        ? "bg-destructive/10 text-destructive hover:bg-destructive/20"
+                        : "bg-accent/40 text-foreground hover:bg-destructive/10 hover:text-destructive",
+                    )}
+                  >
+                    <Icon
+                      className={cn(
+                        "h-3.5 w-3.5 flex-none",
+                        active ? "text-destructive" : "text-muted-foreground",
+                      )}
+                    />
+                    {column.name}
+                    {column.type === "relation" &&
+                    !isEmptyOperator &&
+                    chipFilter.value ? (
+                      <span
+                        className={cn(
+                          "flex items-center gap-1",
+                          active
+                            ? "text-destructive/80"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        · {operatorLabel}
+                        {relationTarget ? (
+                          <RelationTitle
+                            databaseId={relationTarget.id}
+                            columns={relationTarget.columns}
+                            rowId={chipFilter.value}
+                          />
+                        ) : (
+                          <span>database removido</span>
+                        )}
+                      </span>
+                    ) : chipLabel ? (
+                      <span
+                        className={cn(
+                          active
+                            ? "text-destructive/80"
+                            : "text-muted-foreground",
+                        )}
+                      >
+                        · {chipLabel}
+                      </span>
+                    ) : null}
+                  </button>
+                  {filterChipId === id && filterChipPos ? (
+                    <div
+                      data-filter-chip-popover
+                      className={cn(
+                        "fixed z-50 rounded-md border bg-popover p-1 text-left text-sm shadow-md",
+                        column.type === "relation" ? "w-64" : "w-44",
+                      )}
+                      style={{
+                        top: filterChipPos.top,
+                        left: filterChipPos.left,
+                      }}
+                    >
+                      {/* Cabeçalho: nome da propriedade + seletor de operador. */}
+                      <div className="relative flex items-center gap-1 border-b px-1 pb-1">
+                        <span className="min-w-0 flex-1 truncate px-1 text-xs font-medium text-muted-foreground">
+                          {column.name}
+                        </span>
+                        <button
+                          type="button"
+                          data-filter-operator-trigger
+                          onClick={() =>
+                            setFilterOperatorChipId((cur) =>
+                              cur === id ? null : id,
+                            )
+                          }
+                          aria-haspopup="menu"
+                          aria-expanded={filterOperatorChipId === id}
+                          className="flex flex-none items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          {operatorLabel || "é"}
+                          <ChevronDown className="h-3 w-3" />
+                        </button>
+                        {filterOperatorChipId === id ? (
+                          <div
+                            data-filter-operator-popover
+                            role="menu"
+                            className="absolute right-0 top-full z-50 mt-1 w-40 rounded-md border bg-popover p-1 shadow-md"
+                          >
+                            {operatorOptions.map((option) => (
+                              <button
+                                key={option.value}
+                                type="button"
+                                role="menuitem"
+                                onClick={() => {
+                                  setFilterOperators((prev) => ({
+                                    ...prev,
+                                    [id]: option.value,
+                                  }));
+                                  setFilterOperatorChipId(null);
+                                }}
+                                className={cn(
+                                  "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent",
+                                  chipFilter.operator === option.value
+                                    ? "text-foreground"
+                                    : "text-muted-foreground",
+                                )}
+                              >
+                                {option.label}
+                                {chipFilter.operator === option.value ? (
+                                  <Check className="ml-auto h-3.5 w-3.5 flex-none" />
+                                ) : null}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      {/* Valores (só faz sentido em "é"/"não é"). */}
+                      {isEmptyOperator ? null : (
+                        <div className="py-1">
+                          {column.type === "checkbox" ? (
+                            <>
+                              {[
+                                { label: "Marcadas", value: "true" },
+                                { label: "Desmarcadas", value: "" },
+                              ].map((option) => (
+                                <button
+                                  key={option.value || "__empty"}
+                                  type="button"
+                                  onClick={() => {
+                                    setFilterValues((v) => ({
+                                      ...v,
+                                      [id]: option.value,
+                                    }));
+                                    setFilterChipId(null);
+                                  }}
+                                  className={cn(
+                                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent",
+                                    chipFilter.value === option.value
+                                      ? "text-foreground"
+                                      : "text-muted-foreground",
+                                  )}
+                                >
+                                  {option.label}
+                                  {chipFilter.value === option.value ? (
+                                    <Check className="ml-auto h-3.5 w-3.5 flex-none" />
+                                  ) : null}
+                                </button>
+                              ))}
+                            </>
+                          ) : column.type === "select" ||
+                            column.type === "status" ||
+                            column.type === "multi_select" ? (
+                            optionsForColumn(column).length === 0 ? (
+                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                                Nenhuma opção.
+                              </p>
+                            ) : (
+                              optionsForColumn(column).map((opt) => (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  onClick={() => {
+                                    setFilterValues((v) => ({
+                                      ...v,
+                                      [id]: opt.id,
+                                    }));
+                                    setFilterChipId(null);
+                                  }}
+                                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left hover:bg-accent"
+                                >
+                                  <Chip option={opt} />
+                                  {chipFilter.value === opt.id ? (
+                                    <Check className="ml-auto h-3.5 w-3.5 flex-none" />
+                                  ) : null}
+                                </button>
+                              ))
+                            )
+                          ) : column.type === "relation" ? (
+                            column.relationDatabaseId ? (
+                              relationTarget ? (
+                                <RelationSelect
+                                  databaseId={relationTarget.id}
+                                  columns={relationTarget.columns}
+                                  value={
+                                    chipFilter.value ? [chipFilter.value] : []
+                                  }
+                                  multiple={false}
+                                  onChange={(next) => {
+                                    setFilterValues((v) => {
+                                      const updated = { ...v };
+                                      if (next.length === 0) delete updated[id];
+                                      else updated[id] = next[0];
+                                      return updated;
+                                    });
+                                    setFilterChipId(null);
+                                  }}
+                                />
+                              ) : (
+                                <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                                  Database removido.
+                                </p>
+                              )
+                            ) : (
+                              <p className="px-2 py-1.5 text-xs text-muted-foreground">
+                                Escolha um database na propriedade.
+                              </p>
+                            )
+                          ) : (
+                            <input
+                              value={chipFilter.value ?? ""}
+                              onChange={(e) =>
+                                setFilterValues((v) => ({
+                                  ...v,
+                                  [id]: e.target.value,
+                                }))
+                              }
+                              placeholder="Valor…"
+                              aria-label={`Valor do filtro de ${column.name}`}
+                              className="w-full rounded bg-transparent px-2 py-1.5 text-sm text-foreground outline-none focus:bg-accent"
+                            />
+                          )}
+                        </div>
+                      )}
+
+                      {/* Limpar: aparece quando o filtro está configurado. */}
+                      {chipFilter.value || isEmptyOperator ? (
+                        <div className="mt-1 border-t pt-1">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setFilterValues((v) => {
+                                const next = { ...v };
+                                delete next[id];
+                                return next;
+                              });
+                              setFilterOperators((prev) => {
+                                const next = { ...prev };
+                                delete next[id];
+                                return next;
+                              });
+                              setFilterChipId(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
+                          >
+                            Limpar
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+                </span>
+              );
+            })}
+            {/* Botão "+" para adicionar mais propriedades ao filtro. */}
+            <div className="relative">
+              <button
+                type="button"
+                data-filter-bar-trigger
+                onClick={() => setIsFilterBarOpen((v) => !v)}
+                aria-haspopup="menu"
+                aria-expanded={isFilterBarOpen}
+                aria-label="Adicionar propriedade ao filtro"
+                title="Adicionar filtro"
+                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+              {isFilterBarOpen ? (
+                <div
+                  data-filter-bar-popover
+                  role="menu"
+                  className="absolute left-0 top-full z-50 mt-1 w-56 rounded-md border bg-popover p-1 text-sm shadow-md"
+                >
+                  {renderFilterPropertyList(() => setIsFilterBarOpen(false))}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+
+        {/* Área rolável: tabela */}
+        <div ref={tableScrollRef} className="min-h-0 flex-1 overflow-auto">
         {/* Tabela */}
         {activeView.type === "table" ? (
         <div className="min-h-0">
           <table
             data-database-table
             className="w-max table-fixed border-collapse text-sm"
+            onFocus={handleTableFocus}
+            onBlur={handleTableBlur}
             style={{
-              /* Largura fixa em px (soma das colunas + a��es + a coluna fantasma
-                 calculada por `tableSpacerWidth`), e n�o min-width/100%, para que
-                 `table-fixed` N�O redistribua as larguras das colunas: cada uma
-                 mant�m o seu tamanho e a fantasma absorve o resto da tela. */
+              /* Largura fixa em px (soma das colunas + ações + a coluna fantasma
+                 calculada por `tableSpacerWidth`), e não min-width/100%, para que
+                 `table-fixed` NÃO redistribua as larguras das colunas: cada uma
+                 mantém o seu tamanho e a fantasma absorve o resto da tela. */
               width:
+                ROW_GUTTER_WIDTH +
                 visibleColumns.reduce((sum, c) => sum + columnWidth(c), 0) +
                 ACTIONS_COLUMN_WIDTH +
                 tableSpacerWidth,
             }}
           >
             <colgroup>
+              <col style={{ width: ROW_GUTTER_WIDTH }} />
               {visibleColumns.map((column) => (
                 <col
                   key={column.id}
@@ -2827,18 +3700,40 @@ function DatabaseTable({
                 />
               ))}
               <col style={{ width: ACTIONS_COLUMN_WIDTH }} />
-              {/* Coluna fantasma: absorve o espa�o restante do container
+              {/* Coluna fantasma: absorve o espaço restante do container
                   (calculado em `tableSpacerWidth`) para as linhas horizontais
-                  irem at� o fim da tela. Vale 0 quando h� rolagem horizontal. */}
+                  irem até o fim da tela. Vale 0 quando há rolagem horizontal. */}
               <col style={{ width: tableSpacerWidth }} />
             </colgroup>
-            <thead className="sticky top-0 z-10 bg-card">
+            <thead ref={tableHeadRef} className="sticky top-0 z-10 bg-card">
               <tr className="text-left text-xs text-muted-foreground">
+                {/* Coluna gutter: checkbox "selecionar tudo" (aparece só quando há
+                    ao menos uma linha selecionada), alinhado à direita para casar
+                    com o checkbox das linhas. */}
+                <th className="border-b px-1 py-2">
+                  <div className="flex items-center justify-end">
+                    {selectedRowIds.size > 0 ? (
+                      <input
+                        type="checkbox"
+                        checked={selectedRowIds.size === tableRows.length}
+                        ref={(el) => {
+                          if (el) {
+                            el.indeterminate = selectedRowIds.size < tableRows.length;
+                          }
+                        }}
+                        onChange={toggleAllRowsSelection}
+                        aria-label="Selecionar todas as linhas"
+                        className="h-4 w-4 cursor-pointer rounded border-input accent-primary"
+                      />
+                    ) : null}
+                  </div>
+                </th>
                 {visibleColumns.map((column) => {
                   const Icon = columnIcon(column);
                   return (
                     <th
                       key={column.id}
+                      ref={openColumnEditor === column.id ? columnHeaderRef : undefined}
                       className="relative border-b px-3 py-2 font-medium"
                     >
                       <button
@@ -2859,13 +3754,17 @@ function DatabaseTable({
                         <ChevronDown className="ml-auto h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
                       </button>
 
-                      {openColumnEditor === column.id ? (
+                      {openColumnEditor === column.id && columnEditorPos ? (
                         <div
                           data-column-editor
                           className={cn(
-                            "absolute left-3 top-full z-30 mt-1 rounded-md border bg-popover p-3 text-left font-normal text-foreground shadow-md",
+                            "fixed z-30 rounded-md border bg-popover p-3 text-left font-normal text-foreground shadow-md",
                             column.type === "status" ? "w-72" : "w-64",
                           )}
+                          style={{
+                            top: columnEditorPos.top,
+                            left: columnEditorPos.left,
+                          }}
                         >
                           <label className="mb-1 block text-[11px] uppercase tracking-wide text-muted-foreground">
                             Nome
@@ -2881,9 +3780,9 @@ function DatabaseTable({
                               }}
                               aria-haspopup="menu"
                               aria-expanded={openIconPicker === column.id}
-                              title="Escolher �cone da propriedade"
-                              aria-label="Escolher �cone da propriedade"
-                              className="flex h-8 w-8 flex-none items-center justify-center rounded border text-muted-foreground hover:bg-accent hover:text-foreground"
+                              title="Escolher ícone da propriedade"
+                              aria-label="Escolher ícone da propriedade"
+                              className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded border text-muted-foreground hover:bg-accent hover:text-foreground"
                             >
                               <Icon className="h-4 w-4" />
                             </button>
@@ -2919,7 +3818,7 @@ function DatabaseTable({
                                   )}
                                 >
                                   <CircleDashed className="h-4 w-4" />
-                                  Autom�tico
+                                  Automático
                                 </button>
                                 <div className="grid grid-cols-6 gap-1">
                                   {ICON_OPTIONS.map((option) => {
@@ -2967,6 +3866,7 @@ function DatabaseTable({
                                 setOpenPropEditMenu(null);
                                 setOpenNumberFormatMenu(null);
                                 setOpenDecimalsMenu(null);
+                                setOpenCalcMenu(null);
                                 setOpenIconPicker(null);
                               }}
                               aria-haspopup="menu"
@@ -3001,6 +3901,7 @@ function DatabaseTable({
                                         setOpenPropEditMenu(null);
                                         setOpenNumberFormatMenu(null);
                                         setOpenDecimalsMenu(null);
+                                        setOpenCalcMenu(null);
                                       }}
                                       className={cn(
                                         "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
@@ -3029,9 +3930,9 @@ function DatabaseTable({
                               data-select-options-trigger
                               onClick={() => {
                                 if (column.type === "number") {
-                                  // Propriedade num�rica: abre o popover de edi��o
-                                  // (com o bot�o "Formato de n�mero"). Fecha o
-                                  // submenu "Alterar tipo" (s�o mutuamente exclusivos).
+                                  // Propriedade numérica: abre o popover de edição
+                                  // (com o botão "Formato de número"). Fecha o
+                                  // submenu "Alterar tipo" (são mutuamente exclusivos).
                                   setOpenHeaderTypeMenu(null);
                                   setOpenPropEditMenu(
                                     openPropEditMenu === column.id
@@ -3040,13 +3941,14 @@ function DatabaseTable({
                                   );
                                   setOpenNumberFormatMenu(null);
                                   setOpenDecimalsMenu(null);
+                                  setOpenCalcMenu(null);
                                   setOpenIconPicker(null);
                                   return;
                                 }
                                 if (column.type === "status") {
                                   // Propriedade status: abre um sub-popover
                                   // aninhado com as categorias
-                                  // A fazer / Em andamento / Conclu�dos.
+                                  // A fazer / Em andamento / Concluídos.
                                   setOpenHeaderTypeMenu(null);
                                   setOpenStatusOptions(
                                     openStatusOptions === column.id
@@ -3057,6 +3959,7 @@ function DatabaseTable({
                                   setOpenPropEditMenu(null);
                                   setOpenNumberFormatMenu(null);
                                   setOpenDecimalsMenu(null);
+                                  setOpenCalcMenu(null);
                                   setOpenIconPicker(null);
                                   return;
                                 }
@@ -3064,8 +3967,8 @@ function DatabaseTable({
                                   column.type === "select" ||
                                   column.type === "multi_select"
                                 ) {
-                                  // Propriedade de sele��o: abre um sub-popover
-                                  // aninhado com a lista de "Op��es" (adicionar,
+                                  // Propriedade de seleção: abre um sub-popover
+                                  // aninhado com a lista de "Opções" (adicionar,
                                   // renomear, recolorir e excluir).
                                   setOpenHeaderTypeMenu(null);
                                   setOpenSelectOptions(
@@ -3077,6 +3980,7 @@ function DatabaseTable({
                                   setOpenPropEditMenu(null);
                                   setOpenNumberFormatMenu(null);
                                   setOpenDecimalsMenu(null);
+                                  setOpenCalcMenu(null);
                                   setOpenIconPicker(null);
                                   return;
                                 }
@@ -3087,6 +3991,7 @@ function DatabaseTable({
                                 setOpenPropEditMenu(null);
                                 setOpenNumberFormatMenu(null);
                                 setOpenDecimalsMenu(null);
+                                setOpenCalcMenu(null);
                                 setOpenIconPicker(null);
                               }}
                               aria-haspopup={
@@ -3133,20 +4038,22 @@ function DatabaseTable({
                                   <button
                                     type="button"
                                     data-number-format-menu-trigger
-                                    onClick={() =>
+                                    onClick={() => {
                                       setOpenNumberFormatMenu(
                                         openNumberFormatMenu === column.id
                                           ? null
                                           : column.id,
-                                      )
-                                    }
+                                      );
+                                      setOpenDecimalsMenu(null);
+                                      setOpenCalcMenu(null);
+                                    }}
                                     aria-haspopup="menu"
                                     aria-expanded={
                                       openNumberFormatMenu === column.id
                                     }
                                     className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
                                   >
-                                    Formato de n�mero
+                                    Formato de número
                                     <span className="ml-auto truncate text-[11px] text-muted-foreground">
                                       {numberFormatLabel(column)}
                                     </span>
@@ -3243,13 +4150,15 @@ function DatabaseTable({
                                   <button
                                     type="button"
                                     data-decimals-menu-trigger
-                                    onClick={() =>
+                                    onClick={() => {
                                       setOpenDecimalsMenu(
                                         openDecimalsMenu === column.id
                                           ? null
                                           : column.id,
-                                      )
-                                    }
+                                      );
+                                      setOpenNumberFormatMenu(null);
+                                      setOpenCalcMenu(null);
+                                    }}
                                     aria-haspopup="menu"
                                     aria-expanded={openDecimalsMenu === column.id}
                                     className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -3302,6 +4211,96 @@ function DatabaseTable({
                                   ) : null}
                                 </div>
 
+                                <div className="relative">
+                                  <button
+                                    type="button"
+                                    data-calc-menu-trigger
+                                    onClick={() => {
+                                      setOpenCalcMenu(
+                                        openCalcMenu === column.id
+                                          ? null
+                                          : column.id,
+                                      );
+                                      setOpenNumberFormatMenu(null);
+                                      setOpenDecimalsMenu(null);
+                                    }}
+                                    aria-haspopup="menu"
+                                    aria-expanded={openCalcMenu === column.id}
+                                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                                  >
+                                    Calcular
+                                    <span className="ml-auto truncate text-[11px] text-muted-foreground">
+                                      {column.calculate
+                                        ? calcFunctionLabel(column.calculate)
+                                        : "Nenhum"}
+                                    </span>
+                                    <ChevronDown className="h-3.5 w-3.5" />
+                                  </button>
+
+                                  {openCalcMenu === column.id ? (
+                                    <div
+                                      data-calc-menu
+                                      ref={calcMenuFlip.ref}
+                                      className={cn(
+                                        "absolute z-50 max-h-72 w-full min-w-[220px] overflow-y-auto rounded-md border bg-popover p-1 shadow-md",
+                                        calcMenuFlip.className,
+                                      )}
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          updateColumn(column.id, {
+                                            calculate: undefined,
+                                          });
+                                          setOpenCalcMenu(null);
+                                        }}
+                                        className={cn(
+                                          "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                                          !column.calculate &&
+                                            "bg-primary/10 text-primary",
+                                        )}
+                                      >
+                                        Nenhum
+                                        {!column.calculate ? (
+                                          <span className="ml-auto text-[10px] uppercase">
+                                            atual
+                                          </span>
+                                        ) : null}
+                                      </button>
+
+                                      <div className="my-1 h-px bg-border" />
+
+                                      {CALC_FUNCTIONS.map((option) => {
+                                        const isCurrent =
+                                          column.calculate === option.value;
+                                        return (
+                                          <button
+                                            key={option.value}
+                                            type="button"
+                                            onClick={() => {
+                                              updateColumn(column.id, {
+                                                calculate: option.value,
+                                              });
+                                              setOpenCalcMenu(null);
+                                            }}
+                                            className={cn(
+                                              "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                                              isCurrent &&
+                                                "bg-primary/10 text-primary",
+                                            )}
+                                          >
+                                            {option.label}
+                                            {isCurrent ? (
+                                              <span className="ml-auto text-[10px] uppercase">
+                                                atual
+                                              </span>
+                                            ) : null}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  ) : null}
+                                </div>
 
                               </div>
                             ) : null}
@@ -3371,7 +4370,7 @@ function DatabaseTable({
                         </div>
                       ) : null}
 
-                      {/* Al�a para redimensionar a largura da coluna */}
+                      {/* Alça para redimensionar a largura da coluna */}
                       <div
                         role="separator"
                         aria-label={`Redimensionar coluna ${column.name}`}
@@ -3398,8 +4397,8 @@ function DatabaseTable({
                   );
                 })}
 
-                {/* Bot�o para adicionar nova propriedade/coluna */}
-                <th className="border-b px-2 py-2">
+                {/* Botão para adicionar nova propriedade/coluna */}
+                <th className="sticky right-0 z-20 border-b bg-card px-2 py-2">
                   <button
                     type="button"
                     onClick={addColumn}
@@ -3411,22 +4410,125 @@ function DatabaseTable({
                   </button>
                 </th>
 
-                {/* C�lula fantasma: alinha com a coluna espacer para o `border-b`
-                    do cabe�alho cobrir toda a largura da tabela. */}
+                {/* Célula fantasma: alinha com a coluna espacer para o `border-b`
+                    do cabeçalho cobrir toda a largura da tabela. */}
                 <th className="border-b" aria-hidden />
               </tr>
             </thead>
             <tbody>
 
-              {filtered.map((row) => (
-                <tr key={row.id} className="group border-b transition-colors hover:bg-accent/40">
+              {/* Spacer superior: ocupa o espaço das linhas fora da área visível. */}
+              {rowsPaddingTop > 0 ? (
+                <TableSpacerRow
+                  height={rowsPaddingTop}
+                  colSpan={tableColumnCount}
+                />
+              ) : null}
+
+              {virtualRows.map((virtualRow) => {
+                const row = tableRows[virtualRow.index];
+                if (!row) {
+                  // Item extra no fim: indicador de carregamento da próxima página.
+                  return (
+                    <tr key={`__loading_${virtualRow.index}__`}>
+                      <td
+                        colSpan={tableColumnCount}
+                        className="px-3 py-2 text-center text-xs text-muted-foreground"
+                      >
+                        {tableRowsError
+                          ? "Falha ao carregar mais linhas."
+                          : "Carregando…"}
+                      </td>
+                    </tr>
+                  );
+                }
+                return (
+                <tr
+                  key={row.id}
+                  data-row-id={row.id}
+                  className={cn(
+                    "group border-b transition-colors hover:bg-accent/40",
+                    selectedRowIds.has(row.id) && "bg-primary/5",
+                  )}
+                  data-drop-before={
+                    draggingRowId && rowDropBeforeId === row.id ? "" : undefined
+                  }
+                  onDragOver={(event) => {
+                    if (!draggingRowId) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const after = event.clientY - rect.top > rect.height / 2;
+                    const idx = filtered.findIndex((r) => r.id === row.id);
+                    const nextBefore = after
+                      ? (filtered[idx + 1]?.id ?? null)
+                      : row.id;
+                    setRowDropBeforeId((cur) =>
+                      cur === nextBefore ? cur : nextBefore,
+                    );
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const draggedId =
+                      event.dataTransfer.getData("text/plain") || draggingRowId;
+                    const beforeId = rowDropBeforeId;
+                    setDraggingRowId(null);
+                    setRowDropBeforeId(null);
+                    if (draggedId) moveRow(draggedId, beforeId);
+                  }}
+                >
+                  {/* Coluna gutter: controles da linha agrupados (adicionar abaixo,
+                      arrastar, selecionar). Aparecem ao passar o mouse na linha. */}
+                  <td data-row-gutter className="px-1 py-1.5">
+                    <div className="flex items-center justify-end gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          void addRow(undefined, row.id, true);
+                        }}
+                        aria-label="Adicionar linha abaixo"
+                        title="Adicionar linha abaixo"
+                        className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
+                      >
+                        <Plus className="h-3.5 w-3.5" />
+                      </button>
+                      <button
+                        type="button"
+                        draggable
+                        onDragStart={(event) => {
+                          event.dataTransfer.setData("text/plain", row.id);
+                          event.dataTransfer.effectAllowed = "move";
+                          setDraggingRowId(row.id);
+                        }}
+                        onDragEnd={() => {
+                          setDraggingRowId(null);
+                          setRowDropBeforeId(null);
+                        }}
+                        aria-label="Arrastar linha para reordenar"
+                        title="Arrastar para reordenar"
+                        className="flex h-6 w-6 flex-none cursor-grab items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground active:cursor-grabbing focus-visible:opacity-100 group-hover:opacity-100"
+                      >
+                        <GripVertical className="h-3.5 w-3.5" />
+                      </button>
+                      <input
+                        type="checkbox"
+                        checked={selectedRowIds.has(row.id)}
+                        onChange={() => toggleRowSelection(row.id)}
+                        aria-label="Selecionar linha"
+                        className={cn(
+                          "h-4 w-4 flex-none cursor-pointer rounded border-input accent-primary transition-opacity opacity-0 focus-visible:opacity-100 group-hover:opacity-100",
+                          selectedRowIds.has(row.id) && "opacity-100",
+                        )}
+                      />
+                    </div>
+                  </td>
                   {visibleColumns.map((column, index) => (
                     <Fragment key={column.id}>
                       {renderCell(row, column, index === 0)}
                     </Fragment>
                   ))}
 
-                  {/* A��es */}
+                  {/* Ações */}
                   <td className="px-2 py-1.5">
                     <button
                       type="button"
@@ -3438,24 +4540,50 @@ function DatabaseTable({
                     </button>
                   </td>
 
-                  {/* C�lula fantasma: alinha com a coluna espacer para o `border-b`
-                      da linha se estender at� o fim da tela. */}
+                  {/* Célula fantasma: alinha com a coluna espacer para o `border-b`
+                      da linha se estender até o fim da tela. */}
                   <td aria-hidden />
                 </tr>
-              ))}
+                );
+              })}
+
+              {/* Spacer inferior: completa a altura total da lista virtual. */}
+              {rowsPaddingBottom > 0 ? (
+                <TableSpacerRow
+                  height={rowsPaddingBottom}
+                  colSpan={tableColumnCount}
+                />
+              ) : null}
 
             </tbody>
-          </table>
 
-          {/* Nova linha */}
-          <button
-            type="button"
-            onClick={() => addRow()}
-            className="flex w-full items-center gap-2 px-3 py-2 text-sm text-muted-foreground hover:bg-accent/40"
-          >
-            <Plus className="h-4 w-4" />
-            Nova linha
-          </button>
+            {/* Rodapé "Calcular" (estilo Notion): linha sticky no fim da tabela
+                com o agregado de cada coluna numérica configurada. Só aparece
+                quando há ao menos uma coluna com `calculate`. Emite o mesmo
+                número de células do `colgroup` (gutter + visíveis + ações +
+                fantasma) para não desalinhar a grade. */}
+            {calcColumns.length > 0 ? (
+              <tfoot className="sticky bottom-0 z-10 bg-card">
+                <tr className="text-xs">
+                  <td className="border-t px-3 py-2" />
+                  {visibleColumns.map((column) => (
+                    <td
+                      key={column.id}
+                      className="border-t px-3 py-2 font-medium text-foreground"
+                    >
+                      <span className="block truncate whitespace-nowrap">
+                        {column.calculate
+                          ? formatCalcValue(getColumnAggregate(column.id), column)
+                          : ""}
+                      </span>
+                    </td>
+                  ))}
+                  <td className="border-t" aria-hidden />
+                  <td className="border-t" aria-hidden />
+                </tr>
+              </tfoot>
+            ) : null}
+          </table>
         </div>
         ) : activeView.type === "kanban" ? (
         <KanbanBoard
@@ -3465,10 +4593,13 @@ function DatabaseTable({
           canGroup={kanbanColumns.length > 0}
           onOpenRow={(rowId) => setOpenRowPage(rowId)}
           onDeleteRow={(rowId) => removeRow(rowId)}
-          onAddCard={(columnId, value) => addRow({ [columnId]: value })}
+          onAddCard={(columnId, value) => {
+            void addRow({ [columnId]: value });
+          }}
           onMoveCard={moveCard}
           renderCardProperty={renderCardProperty}
           cardTitle={cardTitle}
+          onUpdateColumn={updateColumn}
         />
         ) : (
         <ChartView
@@ -3479,6 +4610,23 @@ function DatabaseTable({
         />
         )}
         </div>
+        {/* Nova linha: fica FORA da área rolável (rodapé fixo do card) para não
+            se deslocar quando linhas são adicionadas — assim o botão continua
+            clicável no mesmo ponto. `onMouseDown` evita que o clique roube o foco
+            (ex.: mantém o foco no campo de busca). */}
+        {activeView.type === "table" ? (
+          <button
+            type="button"
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => {
+              void addRow();
+            }}
+            className="flex w-full flex-none items-center gap-2 border-t px-3 py-2 text-sm text-muted-foreground hover:bg-accent/40"
+          >
+            <Plus className="h-4 w-4" />
+            Nova linha
+          </button>
+        ) : null}
         </div>
       </div>
 
@@ -3499,9 +4647,40 @@ function DatabaseTable({
               columns={columns}
               onClose={() => setOpenRowPage(null)}
               onChangeContent={updatePageContent}
+              onReorderColumns={(orderedIds) => {
+                setColumns((prev) => {
+                  const byId = new Map(prev.map((c) => [c.id, c]));
+                  const next = orderedIds
+                    .map((id) => byId.get(id))
+                    .filter((c): c is Column => Boolean(c));
+                  for (const c of prev) {
+                    if (!orderedIds.includes(c.id)) next.push(c);
+                  }
+                  return next;
+                });
+              }}
+              onUpdateColumn={updateColumn}
+              onRemoveColumn={removeColumn}
+              onEditColumn={(columnId) => {
+                // Fecha a página do item e abre o editor da propriedade no
+                // cabeçalho da tabela (que fica atrás do modal).
+                setOpenRowPage(null);
+                setOpenColumnEditor(columnId);
+              }}
+              onUpdateCell={updateCell}
             />
           </div>
         </div>
+      ) : null}
+
+      {openItem ? (
+        <DatabaseItemPopover
+          databaseId={openItem.databaseId}
+          rowId={openItem.rowId}
+          anchorEl={openItem.anchorEl}
+          onUpdated={() => invalidateRelatedRows([openItem.rowId])}
+          onClose={() => setOpenItem(null)}
+        />
       ) : null}
 
       <PageTemplateDialog
@@ -3522,14 +4701,31 @@ function DatabaseTable({
         open={isSettingsOpen}
         anchorEl={settingsAnchorRef.current}
         title={title}
+        icon={icon}
         columns={columns}
         onRename={setTitle}
+        onUpdateIcon={(next) => onUpdateIcon(viewId, next)}
         onUpdateColumn={updateColumn}
         onAddColumn={addColumn}
         onRemoveColumn={removeColumn}
         onDeleteDatabase={() => {
           setIsSettingsOpen(false);
-          onDeleteDatabase(databaseId);
+          onDeleteDatabase(viewId);
+        }}
+        activeViewType={activeView.type}
+        onChangeViewType={changeViewType}
+        chartConfig={chartConfig}
+        onChangeChartConfig={updateChartConfig}
+        databases={allDatabases}
+        currentDatabaseId={viewId}
+        currentDatabaseName={title}
+        onSaveRelation={(columnId, config) => {
+          const column = columns.find((c) => c.id === columnId);
+          if (column) saveRelationConfig(column, config);
+        }}
+        onSaveRollup={(columnId, config) => {
+          const column = columns.find((c) => c.id === columnId);
+          if (column) saveRollupConfig(column, config);
         }}
         initialView={settingsInitialView}
         onClose={() => setIsSettingsOpen(false)}
@@ -3538,1351 +4734,21 @@ function DatabaseTable({
   );
 }
 
-interface PageTemplateDialogProps {
-  open: boolean;
-  /** Elemento ao qual o popover da lista fica ancorado (bot�o "Criar modelo"). */
-  anchorEl?: HTMLElement | null;
-  templates: PageTemplate[];
-  /** Propriedades da tabela (somente leitura) mostradas no modelo. */
-  columns: Column[];
-  onCreate: (name: string, content: string, recurrence: Recurrence | null) => void;
-  onDelete: (id: string) => void;
-  /** Cria um novo item no database a partir do modelo selecionado. */
-  onApply: (template: PageTemplate) => void;
-  onClose: () => void;
-}
-
-/**
- * Modal para criar e gerenciar modelos de p�gina (estilo Notion).
- * Segue o mesmo padr�o visual da p�gina do item: overlay centralizado,
- * cabe�alho fixo e corpo com scroll. As propriedades exibidas s�o as da pr�pria
- * tabela (somente leitura) � o modelo guarda apenas o nome, o conte�do e a
- * recorr�ncia. Componente de n�vel de m�dulo para preservar o estado dos campos
- * entre renders.
- */
-function PageTemplateDialog({
-  open,
-  anchorEl,
-  templates,
-  columns,
-  onCreate,
-  onDelete,
-  onApply,
-  onClose,
-}: PageTemplateDialogProps) {
-  const [mode, setMode] = useState<"list" | "create">("list");
-  const [name, setName] = useState("");
-  const [content, setContent] = useState("");
-  /** Recorr�ncia habilitada para o modelo. */
-  const [recEnabled, setRecEnabled] = useState(false);
-  /** Configura��o de recorr�ncia (frequ�ncia, intervalo, dias, t�rmino). */
-  const [recurrence, setRecurrence] = useState<Recurrence>(() =>
-    emptyRecurrence(),
-  );
-  /** Quando true, o modelo gera itens automaticamente conforme a recorr�ncia. */
-  const [autoEnabled, setAutoEnabled] = useState(false);
-
-  // Sempre que o di�logo abre, volta para a lista e limpa o formul�rio.
-  useEffect(() => {
-    if (open) {
-      setMode("list");
-      setName("");
-      setContent("");
-      setRecEnabled(false);
-      setRecurrence(emptyRecurrence());
-      setAutoEnabled(false);
-    }
-  }, [open]);
-
-  /** Posi��o (top/right) do popover da lista, ancorado ao bot�o "Criar modelo". */
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
-
-  // Posiciona o popover da lista logo abaixo do bot�o �ncora, alinhado � direita.
-  useLayoutEffect(() => {
-    if (!open || mode !== "list" || !anchorEl) {
-      setPos(null);
-      return;
-    }
-    const rect = anchorEl.getBoundingClientRect();
-    setPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
-  }, [open, mode, anchorEl]);
-
-  if (!open) return null;
-
-  const resetForm = () => {
-    setName("");
-    setContent("");
-    setRecEnabled(false);
-    setRecurrence(emptyRecurrence());
-    setAutoEnabled(false);
-  };
-
-  const handleCreate = () => {
-    if (!name.trim() && !content.trim()) return;
-    const rec =
-      recEnabled
-        ? {
-            ...recurrence,
-            // Marca a data de in�cio quando a automa��o est� ligada; � a partir
-            // dela que os itens passam a ser criados automaticamente.
-            startDate: autoEnabled ? todayISO() : null,
-            lastGenerated: null,
-          }
-        : null;
-    onCreate(name, content, rec);
-    resetForm();
-    setMode("list");
-  };
-
-  /** Atualiza parcialmente a configura��o de recorr�ncia. */
-  const patchRecurrence = (patch: Partial<Recurrence>) => {
-    setRecurrence((prev) => ({ ...prev, ...patch }));
-  };
-
-  /** Liga/desliga um dia da semana na recorr�ncia semanal. */
-  const toggleWeekday = (day: number) => {
-    setRecurrence((prev) => ({
-      ...prev,
-      weekdays: prev.weekdays.includes(day)
-        ? prev.weekdays.filter((d) => d !== day)
-        : [...prev.weekdays, day].sort((a, b) => a - b),
-    }));
-  };
-
-  // Modo "list": popover pequeno ancorado abaixo do bot�o "Criar modelo".
-  // Modo "create": p�gina centralizada (overlay escuro + modal).
-  if (mode === "list") {
-    return (
-      <div
-        className="fixed inset-0 z-50"
-        onClick={onClose}
-        role="presentation"
-      >
-        <div
-          className="absolute w-72 rounded-lg border bg-popover p-1 shadow-lg"
-          style={pos ? { top: pos.top, right: pos.right } : { top: -9999, right: 0 }}
-          onClick={(e) => e.stopPropagation()}
-          role="dialog"
-          aria-label="Modelos de p�gina"
-        >
-          <div className="flex items-center gap-1.5 px-2 py-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
-            <LayoutTemplate className="h-3.5 w-3.5" />
-            Modelos de p�gina
-          </div>
-          <div className="max-h-64 overflow-y-auto">
-            {templates.length > 0 ? (
-              <ul className="space-y-0.5">
-                {templates.map((tpl) => (
-                  <li key={tpl.id}>
-                    <div
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => onApply(tpl)}
-                      onKeyDown={(e) => {
-                        if (e.key === "Enter" || e.key === " ") {
-                          e.preventDefault();
-                          onApply(tpl);
-                        }
-                      }}
-                      title="Criar um item no database a partir deste modelo"
-                      className="group/tpl flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-accent"
-                    >
-                      <LayoutTemplate className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-                      <span className="min-w-0 flex-1 truncate">{tpl.name}</span>
-                      {tpl.recurrence ? (
-                        <span className="flex-none rounded-full bg-accent px-2 py-0.5 text-[11px] text-muted-foreground">
-                          {describeRecurrence(tpl.recurrence)}
-                        </span>
-                      ) : null}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onDelete(tpl.id);
-                        }}
-                        aria-label={`Excluir modelo ${tpl.name}`}
-                        title="Excluir modelo"
-                        className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                      >
-                      <Trash2 className="h-3.5 w-3.5" />
-                      </button>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            ) : (
-              <p className="px-2 py-4 text-center text-sm text-muted-foreground">
-                Voc� ainda n�o tem modelos.
-              </p>
-            )}
-          </div>
-          <div className="mt-0.5 border-t pt-1">
-            <Button
-              className="w-full"
-              size="sm"
-              variant="ghost"
-              onClick={() => setMode("create")}
-            >
-              <Plus />
-              Criar modelo
-            </Button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
-      onClick={onClose}
-      role="presentation"
-    >
-      <div
-        className="flex h-full w-full max-w-[60vw] flex-col overflow-hidden rounded-lg border bg-card shadow-xl"
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-modal="true"
-        aria-label="Criar modelo"
-      >
-        <div className="flex items-center gap-2 border-b px-5 py-3">
-          <button
-            type="button"
-            onClick={() => setMode("list")}
-            aria-label="Voltar para a lista de modelos"
-            title="Voltar"
-            className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <ArrowLeft className="h-4 w-4" />
-          </button>
-          <span className="text-base font-semibold">Criar modelo</span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Fechar"
-            className="ml-auto flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-5">
-          {/* Corpo com scroll �nico (mesmo padr�o da p�gina do item): nome,
-              propriedades, recorr�ncia e conte�do rolam juntos. */}
-          <div className="flex flex-col space-y-4 pt-4">
-            <div className="space-y-1">
-              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground">
-                Nome do modelo
-              </label>
-              <Input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Ex.: Tarefa padr�o"
-              />
-            </div>
-
-            {/* Propriedades da tabela (somente leitura, mesmo estilo da p�gina do item) */}
-            <div className="space-y-1.5">
-              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                Propriedades
-              </span>
-              <div className="flex flex-col divide-y rounded border">
-                {columns.length === 0 ? (
-                  <p className="px-2 py-2 text-xs text-muted-foreground">
-                    A tabela ainda n�o tem propriedades.
-                  </p>
-                ) : (
-                  columns.map((column) => {
-                    const meta = columnTypeMeta(column.type);
-                    const TypeIcon = columnIcon(column);
-                    return (
-                      <div
-                        key={column.id}
-                        className="flex items-center gap-2 px-2 py-1.5"
-                      >
-                        <TypeIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate text-sm">
-                          {column.name}
-                        </span>
-                        <span className="flex-none text-xs text-muted-foreground">
-                          {meta.label}
-                        </span>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-            </div>
-            {/* Recorr�ncia (estilo RRULE): frequ�ncia, intervalo, dias e t�rmino */}
-            <div className="space-y-1.5">
-              <div className="flex items-center justify-between">
-                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                  Recorr�ncia
-                </span>
-                <label className="flex cursor-pointer items-center gap-2 text-xs text-muted-foreground">
-                  <input
-                    type="checkbox"
-                    checked={recEnabled}
-                    onChange={(e) => setRecEnabled(e.target.checked)}
-                    className="h-3.5 w-3.5 accent-primary"
-                  />
-                  Repetir
-                </label>
-              </div>
-
-              {recEnabled ? (
-                <div className="space-y-2 rounded border p-2">
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="text-muted-foreground">Repetir a cada</span>
-                    <Input
-                      type="number"
-                      min={1}
-                      value={recurrence.interval}
-                      onChange={(e) =>
-                        patchRecurrence({
-                          interval: Math.max(1, Number(e.target.value) || 1),
-                        })
-                      }
-                      className="h-7 w-16"
-                      aria-label="Intervalo da recorr�ncia"
-                    />
-                    <select
-                      value={recurrence.frequency}
-                      onChange={(e) =>
-                        patchRecurrence({
-                          frequency: e.target.value as RecurrenceFrequency,
-                        })
-                      }
-                      className="h-7 rounded border bg-background px-2 text-sm"
-                      aria-label="Frequ�ncia da recorr�ncia"
-                    >
-                      {RECURRENCE_FREQUENCIES.map((f) => (
-                        <option key={f.value} value={f.value}>
-                          {f.noun}
-                          {recurrence.interval > 1 ? "s" : ""} �{" "}
-                          {f.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {recurrence.frequency === "weekly" ? (
-                    <div className="flex items-center gap-2">
-                      <span className="text-xs text-muted-foreground">Dias</span>
-                      <div className="flex gap-1">
-                        {WEEKDAY_LABELS.map((label, day) => {
-                          const active = recurrence.weekdays.includes(day);
-                          return (
-                            <button
-                              key={day}
-                              type="button"
-                              onClick={() => toggleWeekday(day)}
-                              aria-pressed={active}
-                              aria-label={`Dia ${day}`}
-                              className={cn(
-                                "flex h-7 w-7 items-center justify-center rounded-full border text-xs",
-                                active
-                                  ? "border-primary bg-primary text-primary-foreground"
-                                  : "text-muted-foreground hover:bg-accent",
-                              )}
-                            >
-                              {label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ) : null}
-
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="text-muted-foreground">Termina</span>
-                    <select
-                      value={recurrence.end}
-                      onChange={(e) =>
-                        patchRecurrence({ end: e.target.value as RecurrenceEnd })
-                      }
-                      className="h-7 rounded border bg-background px-2 text-sm"
-                      aria-label="T�rmino da recorr�ncia"
-                    >
-                      {RECURRENCE_ENDS.map((opt) => (
-                        <option key={opt.value} value={opt.value}>
-                          {opt.label}
-                        </option>
-                      ))}
-                    </select>
-                    {recurrence.end === "on" ? (
-                      <Input
-                        type="date"
-                        value={recurrence.endDate ?? ""}
-                        onChange={(e) =>
-                          patchRecurrence({ endDate: e.target.value })
-                        }
-                        className="h-7 w-36"
-                        aria-label="Data final da recorr�ncia"
-                      />
-                    ) : null}
-                    {recurrence.end === "after" ? (
-                      <span className="flex items-center gap-1">
-                        <Input
-                          type="number"
-                          min={1}
-                          value={recurrence.endCount ?? 1}
-                          onChange={(e) =>
-                            patchRecurrence({
-                              endCount: Math.max(1, Number(e.target.value) || 1),
-                            })
-                          }
-                          className="h-7 w-16"
-                          aria-label="N�mero de ocorr�ncias"
-                        />
-                        <span className="text-muted-foreground">ocorr�ncias</span>
-                      </span>
-                    ) : null}
-                  </div>
-
-                  <p className="text-xs text-muted-foreground">
-                    {describeRecurrence(recurrence)}
-                  </p>
-
-                  <div className="flex flex-wrap items-center gap-2 text-sm">
-                    <span className="text-muted-foreground">Hor�rio</span>
-                    <Input
-                      type="time"
-                      value={recurrence.time ?? ""}
-                      onChange={(e) =>
-                        patchRecurrence({ time: e.target.value || null })
-                      }
-                      className="h-7 w-28"
-                      aria-label="Hor�rio da recorr�ncia"
-                    />
-                    {recurrence.time ? null : (
-                      <span className="text-xs text-muted-foreground">
-                        (vazio = dia inteiro)
-                      </span>
-                    )}
-                  </div>
-
-                  <label className="flex cursor-pointer items-start gap-2 rounded border bg-muted/30 p-2 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={autoEnabled}
-                      onChange={(e) => setAutoEnabled(e.target.checked)}
-                      className="mt-0.5 h-3.5 w-3.5 accent-primary"
-                    />
-                    <span className="text-muted-foreground">
-                      Criar itens automaticamente. Ao abrir o app, um item novo �
-                      criado no database para cada ocorr�ncia que "venceu",
-                      usando este modelo. {autoEnabled ? "Ativo desde hoje." : ""}
-                    </span>
-                  </label>
-                </div>
-              ) : null}
-            </div>
-
-            <div className="flex min-h-0 flex-1 flex-col space-y-1">
-              <label className="block text-[11px] uppercase tracking-wide text-muted-foreground">
-                Conte�do da p�gina
-              </label>
-              <PageEditor
-                value={content}
-                onChange={setContent}
-                placeholder="Escreva o conte�do que ser� aplicado � p�gina do item..."
-                ariaLabel="Conte�do do modelo"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setMode("list")}
-              >
-                Cancelar
-              </Button>
-              <Button size="sm" onClick={handleCreate}>
-                <Plus />
-                Criar modelo
-              </Button>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/**
- * Editor das op��es de uma propriedade Sele��o/Sele��o m�ltipla.
- * Permite adicionar, renomear, recolorir e excluir op��es (estilo Notion).
- */
-function SelectOptionsEditor({
-  options,
-  onChange,
-}: {
-  options: SelectOption[];
-  onChange: (options: SelectOption[]) => void;
-}) {
-  /** Id da op��o cuja paleta de cores est� aberta. */
-  const [colorFor, setColorFor] = useState<string | null>(null);
-
-  function addOption() {
-    onChange([
-      ...options,
-      {
-        id: newOptionId(),
-        label: "Nova op��o",
-        color: OPTION_COLORS[options.length % OPTION_COLORS.length],
-      },
-    ]);
-  }
-
-  function updateOption(id: string, patch: Partial<SelectOption>) {
-    onChange(options.map((o) => (o.id === id ? { ...o, ...patch } : o)));
-  }
-
-  function removeOption(id: string) {
-    onChange(options.filter((o) => o.id !== id));
-  }
-
-  return (
-    <div className="space-y-1.5 rounded border bg-muted/30 p-2">
-      {options.length === 0 ? (
-        <p className="px-1 py-1 text-xs text-muted-foreground">Nenhuma op��o ainda.</p>
-      ) : (
-        <ul className="space-y-1">
-          {options.map((option) => (
-            <li key={option.id} className="flex items-center gap-1.5">
-              <Chip option={option} />
-              <Input
-                value={option.label}
-                onChange={(e) => updateOption(option.id, { label: e.target.value })}
-                className="h-7 min-w-0 flex-1 border-0 px-1 shadow-none"
-                aria-label={`Nome da op��o ${option.label}`}
-              />
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setColorFor((cur) => (cur === option.id ? null : option.id))}
-                  aria-label={`Cor da op��o ${option.label}`}
-                  title="Alterar cor"
-                  className="flex h-7 w-7 items-center justify-center rounded hover:bg-accent"
-                >
-                  <span className={cn("h-3.5 w-3.5 rounded-full", option.color)} />
-                </button>
-                {colorFor === option.id ? (
-                  <div className="absolute right-0 top-8 z-20 grid w-28 grid-cols-5 gap-1 rounded-md border bg-popover p-2 shadow-lg">
-                    {OPTION_COLORS.map((color) => (
-                      <button
-                        key={color}
-                        type="button"
-                        onClick={() => {
-                          updateOption(option.id, { color });
-                          setColorFor(null);
-                        }}
-                        aria-label="Escolher cor"
-                        className={cn(
-                          "h-4 w-4 rounded-full ring-offset-1 hover:ring-2 hover:ring-ring",
-                          color,
-                          option.color === color && "ring-2 ring-ring",
-                        )}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                onClick={() => removeOption(option.id)}
-                aria-label={`Excluir op��o ${option.label}`}
-                title="Excluir op��o"
-                className="flex h-7 w-7 flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
-            </li>
-          ))}
-        </ul>
-      )}
-      <Button variant="outline" size="sm" className="h-7" onClick={addOption}>
-        <Plus className="h-3.5 w-3.5" />
-        Adicionar op��o
-      </Button>
-    </div>
-  );
-}
-
-
-/** Detalhes inline de uma op��o de status: renomear, recolorir e excluir. */
-function StatusOptionDetails({
-  option,
-  colorFor,
-  setColorFor,
-  onUpdate,
-  onRemove,
-}: {
-  option: SelectOption;
-  colorFor: string | null;
-  setColorFor: (updater: (cur: string | null) => string | null) => void;
-  onUpdate: (id: string, patch: Partial<SelectOption>) => void;
-  onRemove: (id: string) => void;
-}) {
-  /** Bot�o da cor � usado para ancorar a paleta fora do container rol�vel. */
-  const colorBtnRef = useRef<HTMLButtonElement>(null);
-  /**
-   * Posi��o (relativa � viewport) da paleta de cores, calculada ao abrir.
-   * A paleta � renderizada num portal com `position: fixed` para N�O contar
-   * como transbordamento rol�vel do popover. Sem isso, abrir a paleta dentro de
-   * um sub-popover com `overflow-y-auto` faz aparecer uma barra de rolagem.
-   */
-  const [palettePos, setPalettePos] = useState<{
-    top: number;
-    left: number;
-  } | null>(null);
-
-  /** Abre/fecha a paleta de cores, posicionando-a sobre o bot�o. */
-  function togglePalette() {
-    if (colorFor === option.id) {
-      setColorFor(() => null);
-      setPalettePos(null);
-      return;
-    }
-    const rect = colorBtnRef.current?.getBoundingClientRect();
-    if (rect) {
-      const paletteWidth = 128; // w-28
-      const paletteHeight = 120;
-      const left = Math.min(rect.left, window.innerWidth - paletteWidth - 8);
-      const openUp = rect.bottom + paletteHeight > window.innerHeight;
-      setPalettePos({
-        top: openUp ? rect.top - paletteHeight : rect.bottom + 4,
-        left: Math.max(8, left),
-      });
-    }
-    setColorFor(() => option.id);
-  }
-
-  return (
-    <div className="mb-1 ml-6 flex items-center gap-1.5 rounded border bg-muted/30 p-1.5">
-      <button
-        ref={colorBtnRef}
-        type="button"
-        onClick={togglePalette}
-        aria-label={`Cor da op��o ${option.label}`}
-        aria-expanded={colorFor === option.id}
-        title="Alterar cor"
-        className="flex h-7 w-7 items-center justify-center rounded hover:bg-accent"
-      >
-        <span className={cn("h-3.5 w-3.5 rounded-full", option.color)} />
-      </button>
-      {colorFor === option.id && palettePos
-        ? createPortal(
-            <div
-              data-option-color-palette
-              style={{ top: palettePos.top, left: palettePos.left }}
-              className="fixed z-[60] grid w-28 grid-cols-5 gap-1 rounded-md border bg-popover p-2 shadow-lg"
-            >
-              {OPTION_COLORS.map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  onClick={() => {
-                    onUpdate(option.id, { color });
-                    setColorFor(() => null);
-                    setPalettePos(null);
-                  }}
-                  aria-label="Escolher cor"
-                  className={cn(
-                    "h-4 w-4 rounded-full ring-offset-1 hover:ring-2 hover:ring-ring",
-                    color,
-                    option.color === color && "ring-2 ring-ring",
-                  )}
-                />
-              ))}
-            </div>,
-            document.body,
-          )
-        : null}
-      <Input
-        value={option.label}
-        onChange={(e) => onUpdate(option.id, { label: e.target.value })}
-        className="h-7 min-w-0 flex-1 border-0 px-1 shadow-none"
-        aria-label={`Nome da op��o ${option.label}`}
-      />
-      <button
-        type="button"
-        onClick={() => onRemove(option.id)}
-        aria-label={`Excluir op��o ${option.label}`}
-        title="Excluir op��o"
-        className="flex h-7 w-7 flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-      >
-        <Trash2 className="h-3.5 w-3.5" />
-      </button>
-    </div>
-  );
-}
-
-/**
- * Editor de status em **abas de categoria** (A fazer / Em andamento /
- * Conclu�dos). Cada aba lista as op��es daquela categoria e permite
- * renomear, recolorir, excluir e adicionar novas op��es � reutilizando os
- * mesmos controles do editor de status agrupado.
- */
-function StatusCategoryTabs({
-  options,
-  onChange,
-}: {
-  options: SelectOption[];
-  onChange: (options: SelectOption[]) => void;
-}) {
-  /** Aba (categoria) ativa. */
-  const [active, setActive] = useState<StatusCategory>("todo");
-  /** Id da op��o com os detalhes (nome/cor) expandidos. */
-  const [editingId, setEditingId] = useState<string | null>(null);
-  /** Id da op��o cuja paleta de cores est� aberta (dentro dos detalhes). */
-  const [colorFor, setColorFor] = useState<string | null>(null);
-
-  function categoryOf(option: SelectOption): StatusCategory {
-    return option.category ?? "todo";
-  }
-
-  function addOption(category: StatusCategory) {
-    onChange([
-      ...options,
-      {
-        id: newOptionId(),
-        label: "Nova op��o",
-        color: OPTION_COLORS[options.length % OPTION_COLORS.length],
-        category,
-      },
-    ]);
-  }
-
-  function updateOption(id: string, patch: Partial<SelectOption>) {
-    onChange(options.map((o) => (o.id === id ? { ...o, ...patch } : o)));
-  }
-
-  function removeOption(id: string) {
-    onChange(options.filter((o) => o.id !== id));
-  }
-
-  const items = options.filter((o) => categoryOf(o) === active);
-
-  return (
-    <div className="space-y-2">
-      <div
-        role="tablist"
-        aria-label="Categorias de status"
-        className="flex gap-1 rounded-md bg-muted/50 p-1"
-      >
-        {STATUS_CATEGORIES.map((category) => {
-          const isActive = active === category.key;
-          return (
-            <button
-              key={category.key}
-              type="button"
-              role="tab"
-              aria-selected={isActive}
-              onClick={() => {
-                setActive(category.key);
-                setEditingId(null);
-                setColorFor(null);
-              }}
-              className={cn(
-                "flex min-w-0 flex-1 items-center justify-center rounded px-1.5 py-1.5 text-center text-[11px] font-medium leading-tight",
-                isActive
-                  ? "bg-background text-foreground shadow-sm"
-                  : "text-muted-foreground hover:text-foreground",
-              )}
-            >
-              {category.label}
-            </button>
-          );
-        })}
-      </div>
-
-      <div className="space-y-0.5">
-        <ul className="space-y-0.5">
-          {items.length === 0 ? (
-            <li className="px-1 py-0.5 text-xs text-muted-foreground">
-              Nenhuma op��o.
-            </li>
-          ) : (
-            items.map((option) => {
-              const expanded = editingId === option.id;
-              return (
-                <li key={option.id} className="rounded">
-                  <div className="flex items-center gap-1 rounded hover:bg-accent/60">
-                    <GripVertical className="ml-1 h-3.5 w-3.5 flex-none text-muted-foreground/60" />
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setEditingId((cur) =>
-                          cur === option.id ? null : option.id,
-                        );
-                        setColorFor(null);
-                      }}
-                      aria-expanded={expanded}
-                      aria-label={`Editar op��o ${option.label}`}
-                      title="Editar op��o"
-                      className="flex min-w-0 flex-1 items-center gap-2 py-1 text-left"
-                    >
-                      <Chip option={option} />
-                      <ChevronRight
-                        className={cn(
-                          "ml-auto h-3.5 w-3.5 flex-none text-muted-foreground transition-transform",
-                          expanded && "rotate-90",
-                        )}
-                      />
-                    </button>
-                  </div>
-                  {expanded ? (
-                    <StatusOptionDetails
-                      option={option}
-                      colorFor={colorFor}
-                      setColorFor={setColorFor}
-                      onUpdate={updateOption}
-                      onRemove={removeOption}
-                    />
-                  ) : null}
-                </li>
-              );
-            })
-          )}
-        </ul>
-
-        <button
-          type="button"
-          onClick={() => addOption(active)}
-          aria-label={`Adicionar op��o em ${STATUS_CATEGORIES.find((c) => c.key === active)?.label ?? ""}`}
-          className="flex w-full items-center gap-2 rounded px-1 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          Nova op��o
-        </button>
-      </div>
-    </div>
-  );
-}
-/**
- * Popover de **Op��es** de uma propriedade do tipo Sele��o (estilo Notion),
- * aberto a partir do bot�o "Editar propriedade" no cabe�alho da coluna. Exibe um
- * cabe�alho "Op��es" com um bot�o "+" e a lista de op��es (chip colorido +
- * seta); ao clicar numa op��o, expande os detalhes para renomear, recolorir e
- * excluir � reutilizando os mesmos controles do editor de status.
- */
-function SelectOptionsPopover({
-  options,
-  onChange,
-}: {
-  options: SelectOption[];
-  onChange: (options: SelectOption[]) => void;
-}) {
-  /** Id da op��o com os detalhes (nome/cor) expandidos. */
-  const [editingId, setEditingId] = useState<string | null>(null);
-  /** Id da op��o cuja paleta de cores est� aberta (dentro dos detalhes). */
-  const [colorFor, setColorFor] = useState<string | null>(null);
-
-  function addOption() {
-    const created = {
-      id: newOptionId(),
-      label: "Nova op��o",
-      color: OPTION_COLORS[options.length % OPTION_COLORS.length],
-    };
-    onChange([...options, created]);
-    // J� abre os detalhes da op��o rec�m-criada para edi��o imediata.
-    setEditingId(created.id);
-    setColorFor(null);
-  }
-
-  function updateOption(id: string, patch: Partial<SelectOption>) {
-    onChange(options.map((o) => (o.id === id ? { ...o, ...patch } : o)));
-  }
-
-  function removeOption(id: string) {
-    onChange(options.filter((o) => o.id !== id));
-    setEditingId((cur) => (cur === id ? null : cur));
-  }
-
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center justify-between px-1">
-        <span className="text-xs font-semibold text-muted-foreground">
-          Op��es
-        </span>
-        <button
-          type="button"
-          onClick={addOption}
-          aria-label="Adicionar op��o"
-          title="Adicionar op��o"
-          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
-      </div>
-
-      {options.length === 0 ? (
-        <p className="px-1 py-1 text-xs text-muted-foreground">
-          Nenhuma op��o ainda.
-        </p>
-      ) : (
-        <ul className="space-y-0.5">
-          {options.map((option) => {
-            const expanded = editingId === option.id;
-            return (
-              <li key={option.id} className="rounded">
-                <div
-                  className={cn(
-                    "flex items-center gap-1 rounded px-1 py-1 hover:bg-accent/60",
-                    expanded && "bg-accent/60",
-                  )}
-                >
-                  <GripVertical className="h-3.5 w-3.5 flex-none text-muted-foreground/60" />
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setEditingId((cur) => (cur === option.id ? null : option.id))
-                    }
-                    aria-expanded={expanded}
-                    aria-label={`Editar op��o ${option.label}`}
-                    title="Editar op��o"
-                    className="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left"
-                  >
-                    <Chip option={option} />
-                    <ChevronRight
-                      className={cn(
-                        "ml-auto h-3.5 w-3.5 flex-none text-muted-foreground transition-transform",
-                        expanded && "rotate-90",
-                      )}
-                    />
-                  </button>
-                </div>
-                {expanded ? (
-                  <StatusOptionDetails
-                    option={option}
-                    colorFor={colorFor}
-                    setColorFor={setColorFor}
-                    onUpdate={updateOption}
-                    onRemove={removeOption}
-                  />
-                ) : null}
-              </li>
-            );
-          })}
-        </ul>
-      )}
-    </div>
-  );
-}
-
-
-
-/**
- * Popover de configura��es da tabela (database), ancorado logo abaixo do bot�o
- * de configura��es. Permite renomear a tabela, gerenciar propriedades (colunas)
- * e excluir a tabela inteira.
- * Componente de n�vel de m�dulo para preservar o estado dos campos entre renders.
- */
-interface TableSettingsPopoverProps {
-  open: boolean;
-  /** Elemento ao qual o popover fica ancorado (bot�o de configura��es). */
-  anchorEl?: HTMLElement | null;
-  title: string;
-  columns: Column[];
-  /** Renomeia a tabela. */
-  onRename: (name: string) => void;
-  /** Atualiza nome/tipo de uma coluna. */
-  onUpdateColumn: (id: string, patch: Partial<Column>) => void;
-  /** Adiciona uma nova coluna. */
-  onAddColumn: () => void;
-  /** Remove uma coluna. */
-  onRemoveColumn: (id: string) => void;
-  /** Exclui a tabela inteira. */
-  onDeleteDatabase: () => void;
-  /** Tela exibida ao abrir o popover (padr�o: menu principal). */
-  initialView?: "menu" | "edit" | "visibility";
-  onClose: () => void;
-}
-
-function TableSettingsPopover({
-  open,
-  anchorEl,
-  title,
-  columns,
-  onRename,
-  onUpdateColumn,
-  onAddColumn,
-  onRemoveColumn,
-  onDeleteDatabase,
-  initialView = "menu",
-  onClose,
-}: TableSettingsPopoverProps) {
-  /** Confirma��o em duas etapas para excluir a tabela. */
-  const [confirmDelete, setConfirmDelete] = useState(false);
-  /** Id da coluna que est� com o seletor de tipo aberto. */
-  const [openTypeFor, setOpenTypeFor] = useState<string | null>(null);
-  /** Tela interna ativa do popover. */
-  const [view, setView] = useState<"menu" | "edit" | "visibility">("menu");
-  /** Id da coluna cujo editor de op��es (select/multi_select) est� aberto. */
-  const [openOptionsFor, setOpenOptionsFor] = useState<string | null>(null);
-
-  // Volta para a tela inicial (menu ou edi��o) sempre que o popover reabre.
-  useEffect(() => {
-    if (open) setView(initialView);
-  }, [open, initialView]);
-
-  /** Posi��o (top/right) do popover, ancorado abaixo do bot�o de configura��es. */
-  const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
-
-  // Posiciona o popover logo abaixo do bot�o �ncora, alinhado � direita.
-  useLayoutEffect(() => {
-    if (!open || !anchorEl) {
-      setPos(null);
-      return;
-    }
-    const rect = anchorEl.getBoundingClientRect();
-    setPos({ top: rect.bottom + 6, right: window.innerWidth - rect.right });
-  }, [open, anchorEl]);
-
-  if (!open) return null;
-
-  return (
-    <div
-      className="fixed inset-0 z-50"
-      onClick={onClose}
-      role="presentation"
-    >
-      <div
-        className="absolute flex max-h-[80vh] w-96 max-w-[calc(100vw-1rem)] flex-col overflow-hidden rounded-lg border bg-popover shadow-xl"
-        style={pos ? { top: pos.top, right: pos.right } : { top: -9999, right: 0 }}
-        onClick={(e) => e.stopPropagation()}
-        role="dialog"
-        aria-label="Configura��es da tabela"
-      >
-        <div className="flex items-center gap-2 border-b px-4 py-2.5">
-          {view !== "menu" ? (
-            <button
-              type="button"
-              onClick={() => setView("menu")}
-              aria-label="Voltar"
-              title="Voltar"
-              className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </button>
-          ) : (
-            <Settings2 className="h-4 w-4 text-muted-foreground" />
-          )}
-          <span className="text-base font-semibold">
-            {view === "menu"
-              ? "Configura��es da tabela"
-              : view === "edit"
-                ? "Editar propriedades"
-                : "Visibilidade de propriedades"}
-          </span>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Fechar"
-            className="ml-auto flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <X className="h-4 w-4" />
-          </button>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 py-3">
-          {view === "menu" ? (
-            <>
-              {/* Nome da tabela */}
-              <div className="space-y-1">
-                <label className="block text-[11px] uppercase tracking-wide text-muted-foreground">
-                  Nome da tabela
-                </label>
-                <Input
-                  value={title}
-                  onChange={(e) => onRename(e.target.value)}
-                  placeholder="Nome da tabela"
-                  aria-label="Nome da tabela"
-                />
-              </div>
-
-              {/* A��es de propriedades */}
-              <div className="space-y-2">
-                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                  Propriedades
-                </span>
-                <button
-                  type="button"
-                  onClick={() => setView("edit")}
-                  className="flex w-full items-center gap-3 rounded border bg-background px-3 py-2.5 text-left hover:bg-accent"
-                >
-                  <SlidersHorizontal className="h-4 w-4 text-muted-foreground" />
-                  <span className="flex-1">
-                    <span className="block text-sm font-medium">Editar propriedades</span>
-                    <span className="block text-xs text-muted-foreground">
-                      Renomear, alterar tipos ou excluir propriedades.
-                    </span>
-                  </span>
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setView("visibility")}
-                  className="flex w-full items-center gap-3 rounded border bg-background px-3 py-2.5 text-left hover:bg-accent"
-                >
-                  <Eye className="h-4 w-4 text-muted-foreground" />
-                  <span className="flex-1">
-                    <span className="block text-sm font-medium">
-                      Visibilidade de propriedades
-                    </span>
-                    <span className="block text-xs text-muted-foreground">
-                      Escolha quais propriedades aparecem na tabela.
-                    </span>
-                  </span>
-                  <ChevronRight className="h-4 w-4 text-muted-foreground" />
-                </button>
-              </div>
-            </>
-          ) : view === "edit" ? (
-            <div className="space-y-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                  Propriedades
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto h-7"
-                  onClick={onAddColumn}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Adicionar propriedade
-                </Button>
-              </div>
-              <ul className="space-y-1.5">
-              {columns.map((column) => {
-                const meta = columnTypeMeta(column.type);
-                const TypeIcon = columnIcon(column);
-                const isTypeOpen = openTypeFor === column.id;
-                return (
-                  <li
-                    key={column.id}
-                    className="flex flex-wrap items-center gap-2 rounded border bg-background px-2 py-1.5"
-                  >
-                    <TypeIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-                    <Input
-                      value={column.name}
-                      onChange={(e) => onUpdateColumn(column.id, { name: e.target.value })}
-                      className="h-7 min-w-0 flex-1 border-0 px-1 shadow-none"
-                      aria-label={`Nome da propriedade ${column.name}`}
-                    />
-                    <div className="relative">
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpenTypeFor((cur) => (cur === column.id ? null : column.id))
-                        }
-                        className="flex h-7 items-center gap-1 rounded px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                        aria-label={`Tipo da propriedade ${column.name}`}
-                        title="Alterar tipo"
-                      >
-                        {meta.label}
-                        <ChevronDown className="h-3 w-3" />
-                      </button>
-                      {isTypeOpen ? (
-                        <div className="absolute right-0 top-8 z-10 w-48 overflow-hidden rounded-md border bg-popover py-1 shadow-lg">
-                          {COLUMN_TYPES.map((t) => {
-                            const OptIcon = t.icon;
-                            return (
-                              <button
-                                key={t.type}
-                                type="button"
-                                onClick={() => {
-                                  onUpdateColumn(column.id, { type: t.type });
-                                  setOpenTypeFor(null);
-                                }}
-                                className={cn(
-                                  "flex w-full items-center gap-2 px-2 py-1.5 text-sm hover:bg-accent",
-                                  column.type === t.type && "bg-accent",
-                                )}
-                              >
-                                <OptIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                                {t.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-                    {column.type === "select" ||
-                    column.type === "status" ||
-                    column.type === "multi_select" ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpenOptionsFor((cur) => (cur === column.id ? null : column.id))
-                        }
-                        aria-label={`Editar op��es de ${column.name}`}
-                        aria-expanded={openOptionsFor === column.id}
-                        title="Editar op��es"
-                        className={cn(
-                          "flex h-7 flex-none items-center gap-1 rounded px-2 text-xs hover:bg-accent hover:text-foreground",
-                          openOptionsFor === column.id
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        <Tags className="h-3.5 w-3.5" />
-                        Op��es
-                      </button>
-                    ) : null}
-                    <button
-                      type="button"
-                      onClick={() => onUpdateColumn(column.id, { hidden: !column.hidden })}
-                      aria-label={`${column.hidden ? "Mostrar" : "Ocultar"} propriedade ${column.name}`}
-                      aria-pressed={!column.hidden}
-                      title={column.hidden ? "Mostrar propriedade" : "Ocultar propriedade"}
-                      className={cn(
-                        "flex h-7 w-7 flex-none items-center justify-center rounded hover:bg-accent",
-                        column.hidden ? "text-muted-foreground" : "text-foreground",
-                      )}
-                    >
-                      {column.hidden ? (
-                        <EyeOff className="h-3.5 w-3.5" />
-                      ) : (
-                        <Eye className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onRemoveColumn(column.id)}
-                      aria-label={`Excluir propriedade ${column.name}`}
-                      title="Excluir propriedade"
-                      className="flex h-7 w-7 flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                    {openOptionsFor === column.id ? (
-                      <div className="basis-full">
-                        <SelectOptionsEditor
-                          options={editableOptionsForColumn(column)}
-                          onChange={(options) => onUpdateColumn(column.id, { options })}
-                        />
-                      </div>
-                    ) : null}
-                  </li>
-                );
-              })}
-            </ul>
-            </div>
-          ) : (
-            <div className="space-y-2">
-              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                Propriedades
-              </span>
-              <ul className="space-y-1.5">
-                {columns.map((column) => {
-                  const TypeIcon = columnIcon(column);
-                  return (
-                    <li
-                      key={column.id}
-                      className="flex items-center gap-2 rounded border bg-background px-2 py-1.5"
-                    >
-                      <TypeIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
-                      <span className="flex-1 truncate text-sm">{column.name}</span>
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUpdateColumn(column.id, { hidden: !column.hidden })
-                        }
-                        aria-label={`${column.hidden ? "Mostrar" : "Ocultar"} propriedade ${column.name}`}
-                        aria-pressed={!column.hidden}
-                        title={column.hidden ? "Mostrar propriedade" : "Ocultar propriedade"}
-                        className={cn(
-                          "flex h-7 w-7 flex-none items-center justify-center rounded hover:bg-accent",
-                          column.hidden ? "text-muted-foreground" : "text-foreground",
-                        )}
-                      >
-                        {column.hidden ? (
-                          <EyeOff className="h-3.5 w-3.5" />
-                        ) : (
-                          <Eye className="h-3.5 w-3.5" />
-                        )}
-                      </button>
-                    </li>
-                  );
-                })}
-              </ul>
-            </div>
-          )}
-          {/* Zona de perigo: excluir tabela */}
-          <div className="space-y-2 rounded border border-destructive/30 bg-destructive/5 px-3 py-3">
-            <span className="block text-[11px] uppercase tracking-wide text-destructive">
-              Zona de perigo
-            </span>
-            {confirmDelete ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-sm text-muted-foreground">
-                  Excluir a tabela e todos os itens? Essa a��o � permanente.
-                </span>
-                <div className="ml-auto flex gap-2">
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="h-7"
-                    onClick={() => setConfirmDelete(false)}
-                  >
-                    Cancelar
-                  </Button>
-                  <Button
-                    variant="destructive"
-                    size="sm"
-                    className="h-7"
-                    onClick={onDeleteDatabase}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                    Excluir tabela
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2">
-                <span className="text-sm text-muted-foreground">
-                  Excluir esta tabela definitivamente.
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto h-7 border-destructive/40 text-destructive hover:bg-destructive/10"
-                  onClick={() => setConfirmDelete(true)}
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                  Excluir tabela
-                </Button>
-              </div>
-            )}
-          </div>
-
-          <div className="flex justify-end gap-2">
-            <Button size="sm" onClick={onClose}>
-              Conclu�do
-            </Button>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
+/* PageTemplateDialog, SelectOptionsPopover e TableSettingsPopover foram
+   extraídos para seus próprios arquivos (ver cabeçalho do módulo acima). */
 
 
 /**
  * Tela do app "Database".
  * Mostra a lista de databases e, ao abrir um, a tabela correspondente.
- * Os dados s�o persistidos no Supabase (por usu�rio, via RLS) com atualiza��es
- * otimistas: o estado local � atualizado na hora e a escrita roda em background,
+ * Os dados são persistidos no Supabase (por usuário, via RLS) com atualizações
+ * otimistas: o estado local é atualizado na hora e a escrita roda em background,
  * com refetch para reverter em caso de erro.
  */
 export function DatabaseView() {
   const [databases, setDatabases] = useState<DatabaseModel[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
-  /** Categorias de projetos do usu�rio (compartilhadas e ordenadas por `position`). */
+  /** Categorias de projetos do usuário (compartilhadas e ordenadas por `position`). */
   const [categories, setCategories] = useState<ProjectCategory[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4891,13 +4757,13 @@ export function DatabaseView() {
   // Projeto ativo no Workspace. `null` = tela de projetos; id = databases do projeto.
   const activeProjectId = useCalendarStore((s) => s.activeProjectId);
   const setActiveProjectId = useCalendarStore((s) => s.setActiveProjectId);
-  // Pedido pendente para a tela de database vindo da sidebar do calend�rio
-  // (ex.: "Adicionar database" com cria��o ou abertura de um existente).
+  // Pedido pendente para a tela de database vindo da sidebar do calendário
+  // (ex.: "Adicionar database" com criação ou abertura de um existente).
   const pendingDatabaseRequest = useCalendarStore((s) => s.pendingDatabaseRequest);
   const consumeDatabaseRequest = useCalendarStore((s) => s.consumeDatabaseRequest);
-  // Mant�m a lista fixada na sidebar do calend�rio sincronizada com delete/rename.
-  // Um database s� entra na sidebar se for adicionado pelo bot�o "Adicionar
-  // database" (na pr�pria sidebar) � criar pela tela de database N�O o fixa.
+  // Mantém a lista fixada na sidebar do calendário sincronizada com delete/rename.
+  // Um database só entra na sidebar se for adicionado pelo botão "Adicionar
+  // database" (na própria sidebar) — criar pela tela de database NÃO o fixa.
   const sidebarDatabases = useCalendarStore((s) => s.sidebarDatabases);
   const addSidebarDatabase = useCalendarStore((s) => s.addSidebarDatabase);
   const updateSidebarDatabase = useCalendarStore((s) => s.updateSidebarDatabase);
@@ -4908,17 +4774,36 @@ export function DatabaseView() {
     [databases, selectedId],
   );
 
-  // Projeto ativo resolvido: s� � v�lido se existir na lista carregada. Se o
-  // id salvo em localStorage apontar para um projeto removido, volta � lista.
+  /**
+   * Database efetivo passado à Tabela. Numa **visão vinculada**, colunas, linhas
+   * e templates vêm da **origem** (ao vivo); a identidade (nome/ícone/abas) é da
+   * visão. Por isso o objeto usa o `id` da origem e recebe o nome/ícone da visão
+   * — e a Tabela recebe `viewId` (identidade) e `linkedDatabaseId` (origem).
+   */
+  const tableDatabase = useMemo(() => {
+    if (!selected) return null;
+    if (!selected.linkedDatabaseId) return selected;
+    const source = databases.find((d) => d.id === selected.linkedDatabaseId);
+    if (!source) return selected;
+    return {
+      ...source,
+      name: selected.name,
+      icon: selected.icon,
+      linkedDatabaseId: selected.linkedDatabaseId,
+    };
+  }, [selected, databases]);
+
+  // Projeto ativo resolvido: só é válido se existir na lista carregada. Se o
+  // id salvo em localStorage apontar para um projeto removido, volta à lista.
   const resolvedProjectId = useMemo(
     () => (projects.some((p) => p.id === activeProjectId) ? activeProjectId : null),
     [projects, activeProjectId],
   );
 
   /*
-   * N�o existe mais uma tela de "selecionar projeto": quando nenhum projeto
-   * est� ativo (primeiro uso ou id removido), seleciona automaticamente o
-   * primeiro projeto da lista para ir direto � lista de databases dele.
+   * Não existe mais uma tela de "selecionar projeto": quando nenhum projeto
+   * está ativo (primeiro uso ou id removido), seleciona automaticamente o
+   * primeiro projeto da lista para ir direto à lista de databases dele.
    */
   useEffect(() => {
     if (resolvedProjectId) return;
@@ -4926,7 +4811,7 @@ export function DatabaseView() {
     if (first) setActiveProjectId(first.id);
   }, [resolvedProjectId, projects, setActiveProjectId]);
 
-  // Databases vis�veis na tela atual: quando h� um projeto ativo, mostra apenas
+  // Databases visíveis na tela atual: quando há um projeto ativo, mostra apenas
   // os databases daquele projeto.
   const projectDatabases = useMemo(
     () => databases.filter((d) => d.projectId === resolvedProjectId),
@@ -4947,8 +4832,8 @@ export function DatabaseView() {
   );
 
   // Espelho sempre atualizado da lista de databases. Usado para ler os valores
-  // atuais de uma linha de forma s�ncrona ao persistir edi��es de c�lula
-  // (o updater do setState roda depois e n�o pode alimentar vari�veis externas).
+  // atuais de uma linha de forma síncrona ao persistir edições de célula
+  // (o updater do setState roda depois e não pode alimentar variáveis externas).
   const databasesRef = useRef<DatabaseModel[]>(databases);
   useEffect(() => {
     databasesRef.current = databases;
@@ -4971,7 +4856,7 @@ export function DatabaseView() {
     [],
   );
 
-  /** Recarrega todos os databases, projetos e categorias (mount e revers�o de erros). */
+  /** Recarrega todos os databases, projetos e categorias (mount e reversão de erros). */
   const reload = useCallback(async () => {
     try {
       const [data, projectList, categoryList] = await Promise.all([
@@ -4988,6 +4873,16 @@ export function DatabaseView() {
     }
   }, []);
 
+  /** Contagem de linhas por database (uma consulta agrupada no servidor). */
+  const [rowCounts, setRowCounts] = useState<Map<string, number>>(new Map());
+  const refreshRowCounts = useCallback(async () => {
+    try {
+      setRowCounts(await countDatabaseRows());
+    } catch {
+      /* a contagem é informativa — uma falha aqui não deve quebrar a tela */
+    }
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -5000,7 +4895,7 @@ export function DatabaseView() {
         ]);
         if (cancelled) return;
         // Gera automaticamente os itens recorrentes que "venceram" (idempotente),
-        // garantindo que o database mostre os itens mesmo sem abrir o calend�rio.
+        // garantindo que o database mostre os itens mesmo sem abrir o calendário.
         const generated = await runAutoTemplates(data);
         if (cancelled) return;
         const merged = data.map((db) => {
@@ -5011,6 +4906,7 @@ export function DatabaseView() {
         setProjects(projectList);
         setCategories(categoryList);
         setError(null);
+        void refreshRowCounts();
       } catch (err) {
         if (!cancelled) {
           setError((err as Error).message || "Falha ao carregar databases");
@@ -5022,17 +4918,21 @@ export function DatabaseView() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshRowCounts]);
 
-  /** Executa uma escrita em background revertendo via refetch em caso de erro. */
+  /**
+   * Executa uma escrita em background. Em erro, mostra a mensagem e aplica o
+   * `rollback` local — **sem** refetch, que zeraria o cursor e o scroll da
+   * Tabela paginada.
+   */
   const persist = useCallback(
-    (action: () => Promise<unknown>) => {
+    (action: () => Promise<unknown>, rollback?: () => void) => {
       void action().catch((err) => {
         setError((err as Error).message || "Falha ao salvar");
-        void reload();
+        rollback?.();
       });
     },
-    [reload],
+    [],
   );
 
 
@@ -5040,17 +4940,25 @@ export function DatabaseView() {
 
   const handleCreate = useCallback(
     async (
-      input?: { name?: string; icon?: string | null },
+      input?: {
+        name?: string;
+        icon?: string | null;
+        /**
+         * Cria o database como **visão vinculada** deste (mesmas propriedades e
+         * itens, ao vivo).
+         */
+        linkedDatabaseId?: string | null;
+      },
       pinToSidebar = false,
       projectId: string | null = activeProjectId,
     ) => {
       try {
-        // Sem projeto expl�cito (ex.: cria��o pela sidebar do calend�rio),
-        // garante o projeto padr�o "Geral" para o database n�o ficar �rf�o.
+        // Sem projeto explícito (ex.: criação pela sidebar do calendário),
+        // garante o projeto padrão "Geral" para o database não ficar órfão.
         let targetProject = projectId;
         if (!targetProject) {
           targetProject = await ensureDefaultProject();
-          // Reflete o projeto rec�m-garantido na lista local, se ainda n�o estiver.
+          // Reflete o projeto recém-garantido na lista local, se ainda não estiver.
           setProjects((prev) => {
             if (prev.some((p) => p.id === targetProject)) return prev;
             return [
@@ -5064,21 +4972,31 @@ export function DatabaseView() {
               },
             ];
           });
-          // Mant�m o Workspace apontando para o projeto padr�o para que o database
-          // criado fique vis�vel na p�gina de databases.
+          // Mantém o Workspace apontando para o projeto padrão para que o database
+          // criado fique visível na página de databases.
           setActiveProjectId(targetProject);
         }
-        const db = await createDatabase(
-          input?.name?.trim() || "Novo database",
-          input?.icon ?? null,
-          targetProject,
-        );
-        setDatabases((prev) => [...prev, db]);
-        setSelectedId(db.id);
-        // S� fixa na sidebar do calend�rio quando a cria��o partiu do bot�o
-        // "Adicionar database" da pr�pria sidebar. Criar pela tela de database
-        // n�o deve injetar o item na sidebar do calend�rio.
-        if (pinToSidebar) addSidebarDatabase({ id: db.id, name: db.name, icon: db.icon });
+        const name = input?.name?.trim() || "Novo database";
+        // "Espelhar database…" no popover: cria uma **visão vinculada** (exibe as
+        // mesmas propriedades e itens da origem, ao vivo). Sem vínculo, cria um
+        // database próprio em branco.
+        const linkedDatabaseId = input?.linkedDatabaseId ?? null;
+        const created = linkedDatabaseId
+          ? await createLinkedDatabase(
+              linkedDatabaseId,
+              name,
+              input?.icon ?? null,
+              targetProject,
+            )
+          : await createDatabase(name, input?.icon ?? null, targetProject);
+
+        setDatabases((prev) => [...prev, created]);
+        setSelectedId(created.id);
+        // Só fixa na sidebar do calendário quando a criação partiu do botão
+        // "Adicionar database" da própria sidebar. Criar pela tela de database
+        // não deve injetar o item na sidebar do calendário.
+        if (pinToSidebar)
+          addSidebarDatabase({ id: created.id, name: created.name, icon: created.icon });
       } catch (err) {
         setError((err as Error).message || "Falha ao criar database");
       }
@@ -5086,14 +5004,14 @@ export function DatabaseView() {
     [activeProjectId, addSidebarDatabase, setActiveProjectId],
   );
 
-  // Atende o pedido disparado pela sidebar do calend�rio assim que a tela de
+  // Atende o pedido disparado pela sidebar do calendário assim que a tela de
   // database estiver pronta (lista inicial carregada): cria um novo database ou
   // abre um existente, e limpa o pedido (evita repetir a cada render).
   useEffect(() => {
     if (!pendingDatabaseRequest || loading) return;
     consumeDatabaseRequest();
     if (pendingDatabaseRequest.type === "create") {
-      // Veio do bot�o "Adicionar database" da sidebar: fixa o novo database l�.
+      // Veio do botão "Adicionar database" da sidebar: fixa o novo database lá.
       void handleCreate(undefined, true);
     } else {
       // Abre um database existente: garante que o Workspace aponte para o
@@ -5113,10 +5031,32 @@ export function DatabaseView() {
 
   const handleDelete = useCallback(
     (id: string) => {
-      setDatabases((prev) => prev.filter((d) => d.id !== id));
+      setDatabases((prev) =>
+        prev
+          // Visões vinculadas à origem são removidas junto (cascade no banco).
+          .filter((d) => d.id !== id && d.linkedDatabaseId !== id)
+          .map((d) => {
+            // Remove as colunas espelho que apontavam para o database excluído.
+            if (!d.columns.some((c) => c.relationDatabaseId === id)) return d;
+            return {
+              ...d,
+              columns: d.columns.filter((c) => c.relationDatabaseId !== id),
+            };
+          }),
+      );
       setSelectedId((current) => (current === id ? null : current));
       removeSidebarDatabase(id);
-      persist(() => deleteDatabase(id));
+      // Remove da sidebar as visões vinculadas que também saíram.
+      for (const d of databasesRef.current) {
+        if (d.linkedDatabaseId === id) removeSidebarDatabase(d.id);
+      }
+      invalidateRelationLinks();
+      invalidateRollupValues();
+      persist(async () => {
+        // Limpa espelhos/vínculos em outras databases antes de excluir.
+        await cleanupRelationsForDatabase(id);
+        await deleteDatabase(id);
+      });
     },
     [persist, removeSidebarDatabase],
   );
@@ -5134,14 +5074,14 @@ export function DatabaseView() {
 
   /**
    * Cria um projeto com os dados informados (nome, categoria e cor) e entra nele
-   * imediatamente, de modo que a p�gina de databases daquele projeto (vazia,
-   * inicialmente) � exibida.
+   * imediatamente, de modo que a página de databases daquele projeto (vazia,
+   * inicialmente) é exibida.
    */
   const handleCreateProject = useCallback(
     async (input: NewProjectInput) => {
       try {
-        // Garante que a categoria usada exista na tabela de categorias do usu�rio
-        // (com a ordem persistida). N�o bloqueia a cria��o do projeto em caso de erro.
+        // Garante que a categoria usada exista na tabela de categorias do usuário
+        // (com a ordem persistida). Não bloqueia a criação do projeto em caso de erro.
         if (input.category) {
           void createProjectCategory(input.category, input.color)
             .then(setCategories)
@@ -5164,7 +5104,7 @@ export function DatabaseView() {
 
   /**
    * Cria (idempotente) uma categoria de projetos e atualiza a lista local. Usado
-   * quando o usu�rio confirma uma categoria no popover, para que ela persista com
+   * quando o usuário confirma uma categoria no popover, para que ela persista com
    * a ordem escolhida.
    */
   const handleCreateCategory = useCallback(async (name: string) => {
@@ -5177,8 +5117,8 @@ export function DatabaseView() {
   }, []);
 
   /**
-   * Persiste a nova ordem das categorias ap�s um arraste (drag & drop). Faz uma
-   * atualiza��o otimista local e grava `position` em background.
+   * Persiste a nova ordem das categorias após um arraste (drag & drop). Faz uma
+   * atualização otimista local e grava `position` em background.
    */
   const handleReorderCategories = useCallback((orderedNames: string[]) => {
     const byName = new Map(categories.map((c) => [c.name, c]));
@@ -5196,8 +5136,8 @@ export function DatabaseView() {
   }, [categories, reload]);
 
   /**
-   * Persiste a nova ordem dos projetos ap�s um arraste (drag & drop) na sidebar.
-   * Faz uma atualiza��o otimista local (reordena `projects`) e grava `position`
+   * Persiste a nova ordem dos projetos após um arraste (drag & drop) na sidebar.
+   * Faz uma atualização otimista local (reordena `projects`) e grava `position`
    * em background.
    */
   const handleReorderProjects = useCallback(
@@ -5247,7 +5187,7 @@ export function DatabaseView() {
   );
 
   /**
-   * Renomeia e/ou recolore uma categoria de projetos. A grava��o acontece no
+   * Renomeia e/ou recolore uma categoria de projetos. A gravação acontece no
    * servidor e devolve a lista atualizada (com o novo nome propagado aos
    * projetos). Em caso de erro (ex.: nome duplicado), recarrega o estado.
    */
@@ -5270,6 +5210,15 @@ export function DatabaseView() {
   /** Exclui uma categoria de projetos (os projetos que a usavam ficam sem categoria). */
   const handleDeleteCategory = useCallback(
     (id: string) => {
+      // Otimista: já move os projetos dessa categoria para "Sem categoria".
+      const removedName = categories.find((c) => c.id === id)?.name ?? null;
+      if (removedName) {
+        setProjects((prev) =>
+          prev.map((p) =>
+            p.category === removedName ? { ...p, category: null } : p,
+          ),
+        );
+      }
       void deleteProjectCategory(id)
         .then((list) => {
           setCategories(list);
@@ -5280,14 +5229,14 @@ export function DatabaseView() {
           void reload();
         });
     },
-    [reload],
+    [categories, reload],
   );
 
 
   const handleDeleteProject = useCallback(
     (id: string) => {
       setProjects((prev) => prev.filter((p) => p.id !== id));
-      // Os databases do projeto s�o removidos em cascata no banco.
+      // Os databases do projeto são removidos em cascata no banco.
       setDatabases((prev) => prev.filter((d) => d.projectId !== id));
       if (activeProjectId === id) setActiveProjectId(null);
       persist(() => deleteProject(id));
@@ -5295,13 +5244,13 @@ export function DatabaseView() {
     [activeProjectId, persist, setActiveProjectId],
   );
 
-  /* ------------------------------- A��es ------------------------------- */
+  /* ------------------------------- Ações ------------------------------- */
 
   const handleRename = useCallback(
     (id: string, name: string) => {
       patchDatabase(id, { name });
-      // Renomear reflete na sidebar apenas se o database j� estiver fixado l�.
-      // Nunca adiciona um database novo � sidebar por causa de um rename.
+      // Renomear reflete na sidebar apenas se o database já estiver fixado lá.
+      // Nunca adiciona um database novo à sidebar por causa de um rename.
       if (sidebarDatabases.some((d) => d.id === id)) {
         const current = sidebarDatabases.find((d) => d.id === id);
         updateSidebarDatabase({ id, name, icon: current?.icon });
@@ -5334,9 +5283,14 @@ export function DatabaseView() {
   );
 
   const handleAddRow = useCallback(
-    (id: string, initialValues?: Record<string, CellValue>) => {
+    async (
+      id: string,
+      initialValues?: Record<string, CellValue>,
+      afterRowId?: string | null,
+      position?: number | null,
+    ): Promise<DbRow | null> => {
       const db = databases.find((d) => d.id === id);
-      if (!db) return;
+      if (!db) return null;
       const values = emptyValuesFor(db.columns);
       if (db.templates[0]) values[PAGE_CONTENT_KEY] = ensureHtml(db.templates[0].content);
       if (initialValues) {
@@ -5344,12 +5298,28 @@ export function DatabaseView() {
           values[key] = val;
         }
       }
-      persist(async () => {
-        const row = await createRow(id, values, db.rows.length);
-        patchDatabase(id, (d) => ({ rows: [...d.rows, row] }));
-      });
+      // A `position` vem da Tabela (calculada entre os vizinhos carregados, com
+      // os gaps de 1000) — o wrapper não tem mais a lista completa de linhas.
+      try {
+        const row =
+          typeof position === "number"
+            ? await createRow(id, values, position)
+            : await createRowAtEnd(id, values);
+        patchDatabase(id, (d) => {
+          const nextRows = [...d.rows];
+          const at = afterRowId
+            ? nextRows.findIndex((r) => r.id === afterRowId)
+            : -1;
+          nextRows.splice(at === -1 ? nextRows.length : at + 1, 0, row);
+          return { rows: nextRows };
+        });
+        return row;
+      } catch (err) {
+        setError((err as Error).message || "Falha ao adicionar linha");
+        return null;
+      }
     },
-    [databases, patchDatabase, persist],
+    [databases, patchDatabase],
   );
 
   const handleApplyTemplate = useCallback(
@@ -5357,15 +5327,15 @@ export function DatabaseView() {
       const db = databases.find((d) => d.id === id);
       if (!db) return;
       const values = emptyValuesFor(db.columns);
-      // Usa o nome do modelo como t�tulo (primeira coluna) quando for texto.
+      // Usa o nome do modelo como título (primeira coluna) quando for texto.
       const first = db.columns[0];
       if (first && (first.type === "text" || first.type === "person")) {
         values[first.id] = template.name;
       }
-      // Aplica o conte�do do modelo (com recorr�ncia) � p�gina do novo item.
+      // Aplica o conteúdo do modelo (com recorrência) à página do novo item.
       values[PAGE_CONTENT_KEY] = templateContentHtml(template);
       persist(async () => {
-        const row = await createRow(id, values, db.rows.length);
+        const row = await createRowAtEnd(id, values);
         patchDatabase(id, (d) => ({ rows: [...d.rows, row] }));
       });
     },
@@ -5373,55 +5343,47 @@ export function DatabaseView() {
   );
 
   const handleUpdateCell = useCallback(
-    (
+    async (
       databaseId: string,
       rowId: string,
       columnId: string,
       value: CellValue,
     ) => {
-      // L� os valores atuais da linha de forma s�ncrona (antes do setState).
-      const db = databasesRef.current.find((d) => d.id === databaseId);
-      const currentRow = db?.rows.find((r) => r.id === rowId);
-      if (!currentRow) return;
-
-      const nextValues: Record<string, CellValue> = {
-        ...currentRow.values,
-        [columnId]: value,
-      };
-
-      // Atualiza o espelho imediatamente para que edi��es r�pidas em sequ�ncia
-      // (ex.: digita��o) sempre partam do valor mais recente, sem depender do
-      // commit/efeito do React.
-      databasesRef.current = databasesRef.current.map((d) =>
-        d.id !== databaseId
-          ? d
-          : {
-              ...d,
-              rows: d.rows.map((r) =>
-                r.id === rowId ? { ...r, values: nextValues } : r,
-              ),
-            },
-      );
-
+      // Não depende de `db.rows` (a Tabela é paginada): a escrita faz **merge**
+      // no servidor e a Tabela aplica/reverte o patch local na lista carregada.
       patchDatabase(databaseId, (d) => ({
         rows: d.rows.map((r) =>
           r.id === rowId ? { ...r, values: { ...r.values, [columnId]: value } } : r,
         ),
       }));
-
-      persist(() => updateRowValues(rowId, nextValues));
+      try {
+        await updateRowCell(rowId, columnId, value);
+      } catch (err) {
+        setError((err as Error).message || "Falha ao salvar");
+        throw err;
+      }
     },
-    [patchDatabase, persist],
+    [patchDatabase],
   );
 
   const handleDeleteRow = useCallback(
-    (databaseId: string, rowId: string) => {
+    async (databaseId: string, rowId: string) => {
       patchDatabase(databaseId, (d) => ({
         rows: d.rows.filter((r) => r.id !== rowId),
       }));
-      persist(() => deleteRow(rowId));
+      // Os vínculos da linha (e o espelho) são removidos em cascade no banco;
+      // invalida os caches para refletir a exclusão nas células de relação.
+      invalidateRelationLinks([rowId]);
+      invalidateRollupValues([rowId]);
+      // A Tabela reverte a lista carregada em caso de erro (ela tem os dados).
+      try {
+        await deleteRow(rowId);
+      } catch (err) {
+        setError((err as Error).message || "Falha ao excluir");
+        throw err;
+      }
     },
-    [patchDatabase, persist],
+    [patchDatabase],
   );
 
   /**
@@ -5444,6 +5406,42 @@ export function DatabaseView() {
       patchDatabase(databaseId, { rows: nextRows });
       persist(() =>
         updateRowPositions(nextRows.map((r, index) => ({ id: r.id, position: index }))),
+      );
+    },
+    [patchDatabase, persist],
+  );
+
+  /**
+   * Aplica novas `position` a um subconjunto de linhas (keyset/gaps). É o
+   * caminho de **1 write** da reordenação por arraste na Tabela: o chamador
+   * calcula a posição entre os vizinhos carregados. Reordena a cópia local e
+   * persiste; em erro, reverte para a ordem anterior (sem refetch).
+   */
+  const handleRowsReordered = useCallback(
+    (databaseId: string, updates: { id: string; position: number }[]) => {
+      if (updates.length === 0) return;
+      const byId = new Map(updates.map((u) => [u.id, u.position]));
+      const applyPositions = (rows: DbRow[]): DbRow[] => {
+        const next = rows.map((r) =>
+          byId.has(r.id) ? { ...r, position: byId.get(r.id) } : r,
+        );
+        next.sort((a, b) => (a.position ?? 0) - (b.position ?? 0));
+        return next;
+      };
+      const previous =
+        databasesRef.current.find((d) => d.id === databaseId)?.rows ?? [];
+      databasesRef.current = databasesRef.current.map((d) =>
+        d.id !== databaseId ? d : { ...d, rows: applyPositions(d.rows) },
+      );
+      patchDatabase(databaseId, (d) => ({ rows: applyPositions(d.rows) }));
+      persist(
+        () => updateRowPositions(updates),
+        () => {
+          databasesRef.current = databasesRef.current.map((d) =>
+            d.id !== databaseId ? d : { ...d, rows: previous },
+          );
+          patchDatabase(databaseId, () => ({ rows: previous }));
+        },
       );
     },
     [patchDatabase, persist],
@@ -5483,6 +5481,40 @@ export function DatabaseView() {
   );
 
   const handleBack = useCallback(() => setSelectedId(null), []);
+  /**
+   * Abre outro database pelo id (link "database relacionado"). Ativa o projeto
+   * do database alvo para manter a sidebar em sincronia quando ele pertence a
+   * outro projeto.
+   */
+  const handleOpenDatabase = useCallback(
+    (id: string) => {
+      const target = databases.find((d) => d.id === id);
+      if (target?.projectId) setActiveProjectId(target.projectId);
+      setSelectedId(id);
+    },
+    [databases, setActiveProjectId],
+  );
+
+  /**
+   * Aviso de erro visível (o estado `error` só era exibido quando não havia
+   * nenhum database, o que escondia falhas ao criar/relacionar databases).
+   */
+  const errorNotice = error ? (
+    <div
+      role="alert"
+      className="pointer-events-auto fixed right-4 top-4 z-[60] flex max-w-sm items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive shadow-md"
+    >
+      <span className="min-w-0 flex-1">{error}</span>
+      <button
+        type="button"
+        onClick={() => setError(null)}
+        aria-label="Fechar aviso"
+        className="flex h-5 w-5 flex-none items-center justify-center rounded hover:bg-destructive/20"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  ) : null;
 
   if (loading) {
     return (
@@ -5504,7 +5536,7 @@ export function DatabaseView() {
   }
 
   /*
-   * Sem projeto ativo (instante inicial, antes da auto-sele��o do primeiro
+   * Sem projeto ativo (instante inicial, antes da auto-seleção do primeiro
    * projeto): mostra apenas a sidebar. O efeito acima seleciona o primeiro
    * projeto e a tela passa a listar os databases dele.
    */
@@ -5548,17 +5580,25 @@ export function DatabaseView() {
           onDeleteProject={handleDeleteProject}
         />
         <DatabasesScreen
-          databases={projectDatabases.map((d) => ({
-            id: d.id,
-            name: d.name,
-            icon: d.icon,
-            rowCount: d.rows.length,
-            columnCount: d.columns.length,
-          }))}
+          databases={projectDatabases.map((d) => {
+            // Numa visão vinculada, contagem e colunas vêm da origem.
+            const source = d.linkedDatabaseId
+              ? databases.find((s) => s.id === d.linkedDatabaseId)
+              : null;
+            return {
+              id: d.id,
+              name: d.name,
+              icon: d.icon,
+              linkedDatabaseId: d.linkedDatabaseId ?? null,
+              rowCount: rowCounts.get(d.linkedDatabaseId ?? d.id) ?? 0,
+              columnCount: source?.columns.length ?? d.columns.length,
+            };
+          })}
           onOpen={setSelectedId}
           onCreate={(input) => void handleCreate(input)}
           onDelete={handleDelete}
         />
+        {errorNotice}
       </div>
     );
   }
@@ -5581,7 +5621,10 @@ export function DatabaseView() {
       />
       <DatabaseTable
         key={selected.id}
-        database={selected}
+        database={tableDatabase ?? selected}
+        viewId={selected.id}
+        linkedDatabaseId={selected.linkedDatabaseId ?? null}
+        allDatabases={databases}
         onRename={handleRename}
         onUpdateIcon={handleUpdateIcon}
         onUpdateColumns={handleUpdateColumns}
@@ -5589,12 +5632,17 @@ export function DatabaseView() {
         onUpdateCell={handleUpdateCell}
         onDeleteRow={handleDeleteRow}
         onReorderRows={handleReorderRows}
+        onRowsReordered={handleRowsReordered}
         onAddTemplate={handleAddTemplate}
         onDeleteTemplate={handleDeleteTemplate}
         onApplyTemplate={handleApplyTemplate}
         onDeleteDatabase={handleDelete}
         onBack={handleBack}
+        onOpenDatabase={handleOpenDatabase}
+        onError={setError}
+        onPatchDatabase={patchDatabase}
       />
+      {errorNotice}
     </div>
   );
 }

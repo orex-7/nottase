@@ -109,13 +109,23 @@ src/
 ├── app/
 │   ├── auth/
 │   │   ├── callback/route.ts  # troca code OAuth pela sessão
-│   │   └── signout/route.ts   # logout
+│   │   └── signout/route.ts   # logout (volta para a landing)
+│   ├── app/page.tsx           # app protegido (server component → CalendarProvider)
 │   ├── login/page.tsx         # página de login (Google)
 │   ├── globals.css            # Tema (variáveis CSS shadcn)
 │   ├── layout.tsx
-│   └── page.tsx               # app protegido (server component)
+│   └── page.tsx               # landing pública (apresentação/venda)
 ├── components/
 │   ├── auth/LoginButton.tsx   # botão "Entrar com Google"
+│   ├── marketing/          # landing pública (apresentação/venda)
+│   │   ├── LandingNav.tsx   # cabeçalho fixo (marca, âncoras, Entrar)
+│   │   ├── Hero.tsx         # proposta de valor + CTA (login)
+│   │   ├── AppPreview.tsx   # mockup da grade de 12 meses (HTML/CSS)
+│   │   ├── FeatureGrid.tsx  # grade de recursos
+│   │   ├── ShowcaseSection.tsx  # demonstrações (kanban, editor)
+│   │   ├── PrivacySection.tsx   # faixa de privacidade (RLS)
+│   │   ├── CtaSection.tsx       # chamada final para ação
+│   │   └── LandingFooter.tsx    # rodapé
 │   ├── calendar/
 │   │   ├── CalendarProvider.tsx  # orquestração client-side
 │   │   ├── YearCalendar.tsx      # alterna entre visão de semana e de mês
@@ -151,8 +161,12 @@ src/
 
 ## ✨ Funcionalidades
 
-- **Login com Google** (Supabase Auth) e logout.
-- Rotas protegidas: usuário não logado é redirecionado para `/login`.
+- **Landing pública** (`/`): tela de apresentação/venda do produto — hero com prévia
+  da grade de 12 meses, grade de recursos, demonstrações (kanban e editor), faixa de
+  privacidade e chamada final para entrar. Não exige login.
+- **App protegido** em `/app`: usuário não logado que acessa `/app` é redirecionado
+  para `/login` (com `redirectTo`), e o login bem-sucedido cai de volta em `/app`.
+- **Login com Google** (Supabase Auth) e logout (volta para a landing pública).
 - Cada usuário enxerga **apenas os próprios eventos** (RLS no Postgres).
 - Grid de **12 meses** responsivo (1 a 4 colunas conforme a tela).
 - Navegação por ano (anterior / próximo / Hoje).

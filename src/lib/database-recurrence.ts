@@ -1,4 +1,4 @@
-import { createRow, updateTemplateRecurrence } from "@/lib/database";
+import { createRow, nextRowPosition, updateTemplateRecurrence } from "@/lib/database";
 import {
   PAGE_CONTENT_KEY,
   PAGE_TIME_KEY,
@@ -100,7 +100,9 @@ export async function runAutoTemplates(
     })();
 
     let rows = database.rows;
-    let position = rows.length;
+    // Posição vem do servidor (não de `rows.length`, que com paginação é só o
+    // tamanho da página carregada).
+    let position = await nextRowPosition(database.id);
     let created = 0;
 
     for (const template of autoTemplates) {

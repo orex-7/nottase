@@ -8,8 +8,12 @@
     --foreground: 222.2 84% 4.9%;
     --card: 0 0% 100%;
     --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
+    /* Fundo dos popovers: cinza neutro da paleta do app, um tom acima dos
+       cards para dar sensação de superfície elevada (cor sólida). */
+    --popover: 0 0% 98.5%;
     --popover-foreground: 222.2 84% 4.9%;
+    /* Hover dos itens de popover: cor próxima do fundo do popover (discreta). */
+    --popover-hover: 0 0% 94%;
     --primary: 222.2 47.4% 11.2%;
     --primary-foreground: 210 40% 98%;
     --secondary: 210 40% 96.1%;
@@ -33,8 +37,12 @@
     --foreground: 0 0% 92%;
     --card: 0 0% 8%;
     --card-foreground: 0 0% 92%;
-    --popover: 0 0% 8%;
+    /* Fundo dos popovers: cinza neutro da paleta do app, um tom acima dos
+       cards para dar sensação de superfície elevada (cor sólida). */
+    --popover: 0 0% 12%;
     --popover-foreground: 0 0% 92%;
+    /* Hover dos itens de popover: cor próxima do fundo do popover (discreta). */
+    --popover-hover: 0 0% 18%;
     --primary: 0 0% 92%;
     --primary-foreground: 0 0% 8%;
     --secondary: 0 0% 14%;
@@ -457,9 +465,19 @@
 [data-database-table] td {
   border-right: 1px solid hsl(var(--border));
 }
-[data-database-table] td:first-child {
-  border-left: 1px solid hsl(var(--border));
+/* A coluna gutter (seleção/arraste, à esquerda) não tem divisória à direita,
+   para não separar visualmente os controles da primeira coluna de dados. */
+[data-database-table] td[data-row-gutter] {
+  border-right: none;
 }
+/* Indicador de inserção do arraste de linhas: uma barra horizontal no topo de
+   TODAS as células da linha (atravessa a tabela inteira, não só a gutter). */
+[data-database-table] tr[data-drop-before] > td {
+  box-shadow: inset 0 2px 0 hsl(var(--primary));
+}
+/* A borda esquerda da tabela vem do próprio container (o card tem `border`).
+   Não adicionamos `border-left` no primeiro `td`, senão ele encosta na borda do
+   container e a linha vertical fica com aspecto mais grosso que as demais. */
 /* Coluna de ações (lixeira) e coluna fantasma finais sem divisória à direita
    para não "vazar": a última célula é a fantasma (`aria-hidden`) e a
    penúltima guarda as ações, então removemos a divisória de ambas. */
@@ -518,5 +536,42 @@
 ::-webkit-scrollbar-thumb:hover {
   background: hsl(var(--muted-foreground) / 0.55);
   background-clip: content-box;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Hover discreto nos itens de popover: dentro de um painel com `bg-popover`,
+   os botões/itens com `hover:bg-accent` passam a usar uma cor próxima do fundo
+   do popover (--popover-hover) em vez do accent padrão, mais contrastante. */
+.bg-popover .hover\:bg-accent:hover {
+  background-color: hsl(var(--popover-hover));
+}
+
+/* ------------------------------------------------------------------------- */
+/* Outline vermelho no input em foco (em todo o app). Usa `!important` para
+   vencer as utilities `outline-none`/`focus:outline-none` presentes nos inputs.
+   Checkboxes/radios ficam de fora (têm o próprio estilo de foco via `accent`).
+   `:where()` zera a especificidade para que a exceção abaixo possa vencê-la. */
+:where(
+    input:not([type="checkbox"]):not([type="radio"]),
+    textarea,
+    select
+  ):focus {
+  outline: 2px solid hsl(var(--destructive)) !important;
+  outline-offset: -1px !important;
+}
+/* Exceção: os inputs das células da tabela do banco de dados NÃO recebem o
+   outline vermelho. */
+[data-database-table] input:focus,
+[data-database-table] textarea:focus,
+[data-database-table] select:focus {
+  outline: none !important;
+}
+
+/* ------------------------------------------------------------------------- */
+/* Célula da tabela com um input em foco: destaca a célula inteira. */
+[data-database-table] td:has(input:focus),
+[data-database-table] td:has(textarea:focus),
+[data-database-table] td:has(select:focus) {
+  background-color: hsl(var(--accent) / 0.6);
 }
 

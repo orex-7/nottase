@@ -108,6 +108,9 @@ create table if not exists public.databases (
   icon        text,
   -- Array de colunas/propriedades: [{ id, name, type }, ...]
   columns     jsonb not null default '[]'::jsonb,
+  -- Visão vinculada: aponta para o database de origem cujas propriedades e
+  -- itens este database exibe (editar em um reflete no outro). Null = próprio.
+  linked_database_id uuid references public.databases (id) on delete cascade,
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -116,6 +119,9 @@ create index if not exists databases_user_idx on public.databases (user_id);
 
 create index if not exists databases_project_idx
   on public.databases (user_id, project_id);
+
+create index if not exists databases_linked_idx
+  on public.databases (linked_database_id);
 
 -- ----------------------------------------------------------------------------
 -- Tabela de linhas de um database
@@ -131,8 +137,873 @@ create table if not exists public.database_rows (
   updated_at  timestamptz not null default now()
 );
 
+-- Índice com o tiebreak do cursor: (user_id, database_id) casa a RLS + o filtro
+-- por database; (position, id) casa o ORDER BY e o keyset da paginação.
 create index if not exists database_rows_user_db_idx
-  on public.database_rows (user_id, database_id, position);
+  on public.database_rows (user_id, database_id, position, id);
+
+-- Busca por substring sobre os VALORES (não as chaves do JSON), reproduzindo a
+-- semântica do cliente (arrays unidos por espaço). Índice GIN pg_trgm na
+-- expressão — mantido automaticamente pelo Postgres.
+create extension if not exists pg_trgm;
+
+create or replace function public.database_row_search_text(v jsonb)
+returns text
+language sql
+immutable
+parallel safe
+as $$
+  select coalesce(string_agg(
+    case
+      when jsonb_typeof(val) = 'array'
+        then (select string_agg(x, ' ') from jsonb_array_elements_text(val) as x)
+      else val #>> '{}'
+    end, ' '), '')
+  from jsonb_each(v) as e(key, val)
+$$;
+
+create index if not exists database_rows_search_trgm_idx
+  on public.database_rows using gin (public.database_row_search_text(values) gin_trgm_ops);
+
+-- ----------------------------------------------------------------------------
+-- Relação (junção): tabela de vínculos entre linhas.
+-- ----------------------------------------------------------------------------
+-- Definida antes de `database_rows_page`, que a referencia nos filtros de
+-- relação. `property_id` = id da coluna (databases.columns[].id), sem FK.
+create table if not exists public.relation_links (
+  id              uuid primary key default gen_random_uuid(),
+  user_id         uuid not null references auth.users (id) on delete cascade,
+  property_id     text not null,
+  source_item_id  uuid not null references public.database_rows (id) on delete cascade,
+  target_item_id  uuid not null references public.database_rows (id) on delete cascade,
+  created_at      timestamptz not null default now(),
+  unique (property_id, source_item_id, target_item_id)
+);
+
+create index if not exists relation_links_src_idx
+  on public.relation_links (user_id, property_id, source_item_id);
+
+create index if not exists relation_links_tgt_idx
+  on public.relation_links (user_id, property_id, target_item_id);
+
+-- uuid válido ou null (evita erro de cast em filtros de relação).
+create or replace function public.safe_uuid(v text)
+returns uuid
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when v ~ '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$'
+      then v::uuid
+    else null
+  end;
+$$;
+
+-- Filtro por propriedade (operadores: is | is_not | is_empty | is_not_empty).
+create or replace function public.database_row_matches_filter(v jsonb, f jsonb)
+returns boolean
+language sql
+immutable
+parallel safe
+as $$
+  select case f ->> 'operator'
+    when 'is_empty' then
+      case
+        when jsonb_typeof(v -> (f ->> 'columnId')) = 'array'
+          then jsonb_array_length(v -> (f ->> 'columnId')) = 0
+        else coalesce(v ->> (f ->> 'columnId'), '') = ''
+      end
+    when 'is_not_empty' then
+      case
+        when jsonb_typeof(v -> (f ->> 'columnId')) = 'array'
+          then jsonb_array_length(v -> (f ->> 'columnId')) > 0
+        else coalesce(v ->> (f ->> 'columnId'), '') <> ''
+      end
+    when 'is' then
+      case
+        when jsonb_typeof(v -> (f ->> 'columnId')) = 'array'
+          then (v -> (f ->> 'columnId')) @> jsonb_build_array(f ->> 'value')
+        else coalesce(v ->> (f ->> 'columnId'), '') = coalesce(f ->> 'value', '')
+      end
+    when 'is_not' then
+      case
+        when jsonb_typeof(v -> (f ->> 'columnId')) = 'array'
+          then not ((v -> (f ->> 'columnId')) @> jsonb_build_array(f ->> 'value'))
+        else coalesce(v ->> (f ->> 'columnId'), '') <> coalesce(f ->> 'value', '')
+      end
+    else true
+  end
+$$;
+
+-- Página de linhas por keyset, com busca e filtros no servidor (security invoker:
+-- a RLS continua valendo). Dropa a assinatura antiga (p_checkbox) antes de
+-- recriar, pois `create or replace` não renomeia parâmetros.
+drop function if exists public.database_rows_page(
+  uuid, integer, integer, uuid, text, jsonb
+);
+
+create or replace function public.database_rows_page(
+  p_database_id uuid,
+  p_limit integer default 300,
+  p_cursor_position integer default null,
+  p_cursor_id uuid default null,
+  p_search text default null,
+  p_filters jsonb default null
+)
+returns setof public.database_rows
+language sql
+security invoker
+stable
+as $$
+  select r.*
+  from public.database_rows r
+  where r.database_id = p_database_id
+    and (
+      p_cursor_position is null
+      or (r.position, r.id) > (p_cursor_position, p_cursor_id)
+    )
+    and (
+      p_search is null
+      or p_search = ''
+      or public.database_row_search_text(r.values) ilike '%' || p_search || '%'
+    )
+    -- Filtros por propriedade (valores no JSONB).
+    and not exists (
+      select 1
+      from jsonb_array_elements(coalesce(p_filters, '[]'::jsonb)) as f
+      where not public.database_row_matches_filter(r.values, f)
+    )
+    -- Filtros de relação (vínculos na tabela de junção).
+    and not exists (
+      select 1
+      from jsonb_array_elements(coalesce(p_filters, '[]'::jsonb)) as f
+      where (f ->> 'operator') like 'relation_%'
+        and not (
+          case f ->> 'operator'
+            when 'relation_is' then exists (
+              select 1 from public.relation_links l
+              where l.property_id = f ->> 'columnId'
+                and l.source_item_id = r.id
+                and l.target_item_id = public.safe_uuid(f ->> 'value')
+            )
+            when 'relation_is_not' then not exists (
+              select 1 from public.relation_links l
+              where l.property_id = f ->> 'columnId'
+                and l.source_item_id = r.id
+                and l.target_item_id = public.safe_uuid(f ->> 'value')
+            )
+            when 'relation_is_empty' then not exists (
+              select 1 from public.relation_links l
+              where l.property_id = f ->> 'columnId'
+                and l.source_item_id = r.id
+            )
+            when 'relation_is_not_empty' then exists (
+              select 1 from public.relation_links l
+              where l.property_id = f ->> 'columnId'
+                and l.source_item_id = r.id
+            )
+            else true
+          end
+        )
+    )
+  order by r.position, r.id
+  limit greatest(1, least(p_limit, 1000));
+$$;
+
+-- Grava uma única célula (merge no JSONB), sem precisar do mapa inteiro.
+create or replace function public.database_row_set_cell(
+  p_row_id uuid,
+  p_column_id text,
+  p_value jsonb
+)
+returns void
+language sql
+security invoker
+as $$
+  update public.database_rows
+  set values = values || jsonb_build_object(p_column_id, p_value)
+  where id = p_row_id;
+$$;
+
+-- Próxima posição (fim da lista) para uma linha nova.
+create or replace function public.database_next_row_position(p_database_id uuid)
+returns integer
+language sql
+security invoker
+stable
+as $$
+  select coalesce(max(position), -1000) + 1000
+  from public.database_rows
+  where database_id = p_database_id;
+$$;
+
+-- Contagem agrupada por database (uma consulta para a tela de databases).
+create or replace function public.database_row_counts()
+returns table (database_id uuid, total bigint)
+language sql
+security invoker
+stable
+as $$
+  select database_id, count(*)::bigint
+  from public.database_rows
+  group by database_id;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- Rollup (calculado): helpers puros usados por `rollup_values_for_rows`.
+-- ----------------------------------------------------------------------------
+-- (A tabela `relation_links` e o `safe_uuid` — usados por `database_rows_page` —
+--  são definidos acima, junto das demais funções das linhas.)
+
+-- Valor numérico de uma célula (null quando não é número).
+create or replace function public.rollup_number(v jsonb)
+returns numeric
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when v is null then null
+    when jsonb_typeof(v) = 'number' then (v #>> '{}')::numeric
+    when jsonb_typeof(v) = 'string' and (v #>> '{}') ~ '^-?[0-9]+(\.[0-9]+)?$'
+      then (v #>> '{}')::numeric
+    else null
+  end;
+$$;
+
+-- Texto de uma célula (null quando vazia). Arrays viram lista separada por vírgula.
+create or replace function public.rollup_text(v jsonb)
+returns text
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when v is null then null
+    when jsonb_typeof(v) = 'array'
+      then nullif((select string_agg(x, ', ') from jsonb_array_elements_text(v) as x), '')
+    when jsonb_typeof(v) = 'boolean'
+      then case when (v #>> '{}') = 'true' then 'true' else 'false' end
+    else nullif(v #>> '{}', '')
+  end;
+$$;
+
+-- Célula vazia (sem valor)?
+create or replace function public.rollup_is_empty(v jsonb)
+returns boolean
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when v is null then true
+    when jsonb_typeof(v) = 'array' then jsonb_array_length(v) = 0
+    when jsonb_typeof(v) = 'string' then (v #>> '{}') = ''
+    else false
+  end;
+$$;
+
+-- ----------------------------------------------------------------------------
+-- Calcular (agregado de coluna no rodapé): parser pt-BR + RPC somente leitura.
+-- ----------------------------------------------------------------------------
+
+-- Parser numérico pt-BR (espelha `parseNumberValue` do cliente): remove espaços,
+-- remove `.` de milhar (seguido de exatamente 3 dígitos), troca a vírgula
+-- decimal por ponto e valida. Vazio/não numérico → null.
+create or replace function public.database_parse_number(v text)
+returns numeric
+language sql
+immutable
+parallel safe
+as $$
+  select case
+    when t.norm ~ '^-?[0-9]+(\.[0-9]+)?$' then t.norm::numeric
+    else null
+  end
+  from (
+    select replace(
+      regexp_replace(
+        regexp_replace(coalesce(v, ''), '\s', '', 'g'),
+        '\.(?=[0-9]{3}([^0-9]|$))',
+        '',
+        'g'
+      ),
+      ',',
+      '.'
+    ) as norm
+  ) t;
+$$;
+
+-- Agrega colunas numéricas sobre **todas** as linhas do database, respeitando a
+-- busca e os filtros (o mesmo WHERE de `database_rows_page`, sem keyset/limit).
+-- p_configs: [{ "columnId": "<id>", "fn": "<fn>" }, ...].
+create or replace function public.database_column_aggregates(
+  p_database_id uuid,
+  p_configs jsonb,
+  p_search text default null,
+  p_filters jsonb default null
+)
+returns table (column_id text, value jsonb)
+language sql
+security invoker
+stable
+as $$
+  with cfg as (
+    select c ->> 'columnId' as column_id,
+           c ->> 'fn' as fn
+    from jsonb_array_elements(coalesce(p_configs, '[]'::jsonb)) as c
+  ),
+  filtered as (
+    select r.values
+    from public.database_rows r
+    where r.database_id = p_database_id
+      and (
+        p_search is null
+        or p_search = ''
+        or public.database_row_search_text(r.values) ilike '%' || p_search || '%'
+      )
+      and not exists (
+        select 1
+        from jsonb_array_elements(coalesce(p_filters, '[]'::jsonb)) as f
+        where not public.database_row_matches_filter(r.values, f)
+      )
+      and not exists (
+        select 1
+        from jsonb_array_elements(coalesce(p_filters, '[]'::jsonb)) as f
+        where (f ->> 'operator') like 'relation_%'
+          and not (
+            case f ->> 'operator'
+              when 'relation_is' then exists (
+                select 1 from public.relation_links l
+                where l.property_id = f ->> 'columnId'
+                  and l.source_item_id = r.id
+                  and l.target_item_id = public.safe_uuid(f ->> 'value')
+              )
+              when 'relation_is_not' then not exists (
+                select 1 from public.relation_links l
+                where l.property_id = f ->> 'columnId'
+                  and l.source_item_id = r.id
+                  and l.target_item_id = public.safe_uuid(f ->> 'value')
+              )
+              when 'relation_is_empty' then not exists (
+                select 1 from public.relation_links l
+                where l.property_id = f ->> 'columnId'
+                  and l.source_item_id = r.id
+              )
+              when 'relation_is_not_empty' then exists (
+                select 1 from public.relation_links l
+                where l.property_id = f ->> 'columnId'
+                  and l.source_item_id = r.id
+              )
+              else true
+            end
+          )
+      )
+  )
+  select cfg.column_id, agg.value
+  from cfg
+  cross join lateral (
+    select case cfg.fn
+      when 'count_all' then
+        to_jsonb(count(*))
+      when 'count_filled' then
+        to_jsonb(count(*) filter (where not public.rollup_is_empty(fr.values -> cfg.column_id)))
+      when 'count_empty' then
+        to_jsonb(count(*) filter (where public.rollup_is_empty(fr.values -> cfg.column_id)))
+      when 'count_unique' then
+        to_jsonb(count(distinct coalesce(
+          public.database_parse_number(fr.values ->> cfg.column_id)::text,
+          fr.values ->> cfg.column_id
+        )) filter (where not public.rollup_is_empty(fr.values -> cfg.column_id)))
+      when 'percent_filled' then
+        case when count(*) = 0 then to_jsonb(0)
+             else to_jsonb(round(
+               100.0 * count(*) filter (where not public.rollup_is_empty(fr.values -> cfg.column_id))
+               / count(*), 1))
+        end
+      when 'percent_empty' then
+        case when count(*) = 0 then to_jsonb(0)
+             else to_jsonb(round(
+               100.0 * count(*) filter (where public.rollup_is_empty(fr.values -> cfg.column_id))
+               / count(*), 1))
+        end
+      when 'sum' then
+        case when count(public.database_parse_number(fr.values ->> cfg.column_id)) = 0
+             then 'null'::jsonb
+             else to_jsonb(sum(public.database_parse_number(fr.values ->> cfg.column_id)))
+        end
+      when 'avg' then
+        to_jsonb(avg(public.database_parse_number(fr.values ->> cfg.column_id)))
+      when 'median' then
+        to_jsonb(percentile_cont(0.5) within group (
+          order by public.database_parse_number(fr.values ->> cfg.column_id)
+        ))
+      when 'min' then
+        to_jsonb(min(public.database_parse_number(fr.values ->> cfg.column_id)))
+      when 'max' then
+        to_jsonb(max(public.database_parse_number(fr.values ->> cfg.column_id)))
+      when 'range' then
+        case when count(public.database_parse_number(fr.values ->> cfg.column_id)) = 0
+             then 'null'::jsonb
+             else to_jsonb(
+               max(public.database_parse_number(fr.values ->> cfg.column_id))
+               - min(public.database_parse_number(fr.values ->> cfg.column_id)))
+        end
+      else 'null'::jsonb
+    end as value
+    from filtered fr
+  ) agg;
+$$;
+
+-- Remove uma coluna espelho (e os vínculos dela) de onde ela estiver.
+create or replace function public.relation_reverse_remove(p_reverse_column_id text)
+returns void
+language plpgsql
+security invoker
+as $$
+begin
+  if p_reverse_column_id is null or p_reverse_column_id = '' then
+    return;
+  end if;
+  delete from public.relation_links where property_id = p_reverse_column_id;
+  update public.databases d
+  set columns = coalesce((
+    select jsonb_agg(c)
+    from jsonb_array_elements(d.columns) c
+    where c ->> 'id' <> p_reverse_column_id
+  ), '[]'::jsonb)
+  where exists (
+    select 1 from jsonb_array_elements(d.columns) c
+    where c ->> 'id' = p_reverse_column_id
+  );
+end;
+$$;
+
+-- Cria/atualiza a coluna de relação na origem e, quando bidirecional, o espelho
+-- no database alvo (numa única transação). Devolve o id do espelho (ou null).
+create or replace function public.relation_property_create(
+  p_database_id uuid,
+  p_column_id text,
+  p_name text,
+  p_relation_database_id uuid,
+  p_limit text,
+  p_bidirectional boolean,
+  p_reverse_column_id text,
+  p_reverse_name text
+)
+returns text
+language plpgsql
+security invoker
+as $$
+declare
+  v_old_reverse text;
+  v_old_reverse_db uuid;
+  v_reverse_id text;
+  v_new_col jsonb;
+  v_reverse_col jsonb;
+begin
+  if not exists (select 1 from public.databases where id = p_database_id) then
+    raise exception 'database de origem não encontrado';
+  end if;
+  if not exists (select 1 from public.databases where id = p_relation_database_id) then
+    raise exception 'database de destino não encontrado';
+  end if;
+
+  select c ->> 'reversePropertyId'
+    into v_old_reverse
+  from public.databases d, jsonb_array_elements(d.columns) c
+  where d.id = p_database_id and c ->> 'id' = p_column_id;
+
+  if v_old_reverse is not null then
+    select d.id into v_old_reverse_db
+    from public.databases d, jsonb_array_elements(d.columns) c
+    where c ->> 'id' = v_old_reverse;
+  end if;
+
+  if v_old_reverse is not null
+     and (not coalesce(p_bidirectional, false) or v_old_reverse_db is distinct from p_relation_database_id)
+  then
+    perform public.relation_reverse_remove(v_old_reverse);
+    v_old_reverse := null;
+    v_old_reverse_db := null;
+  end if;
+
+  if coalesce(p_bidirectional, false) then
+    v_reverse_id := coalesce(
+      v_old_reverse,
+      nullif(p_reverse_column_id, ''),
+      'col_' || replace(gen_random_uuid()::text, '-', '')
+    );
+  else
+    v_reverse_id := null;
+  end if;
+
+  v_new_col := jsonb_strip_nulls(jsonb_build_object(
+    'id', p_column_id,
+    'name', p_name,
+    'type', 'relation',
+    'relationDatabaseId', p_relation_database_id,
+    'limit', coalesce(nullif(p_limit, ''), 'many'),
+    'isBidirectional', coalesce(p_bidirectional, false),
+    'reversePropertyId', v_reverse_id
+  ));
+
+  if exists (
+    select 1 from public.databases d, jsonb_array_elements(d.columns) c
+    where d.id = p_database_id and c ->> 'id' = p_column_id
+  ) then
+    update public.databases d
+    set columns = (
+      select jsonb_agg(case when c ->> 'id' = p_column_id then v_new_col else c end)
+      from jsonb_array_elements(d.columns) c
+    )
+    where d.id = p_database_id;
+  else
+    update public.databases d
+    set columns = d.columns || jsonb_build_array(v_new_col)
+    where d.id = p_database_id;
+  end if;
+
+  if v_reverse_id is not null then
+    v_reverse_col := jsonb_build_object(
+      'id', v_reverse_id,
+      'name', coalesce(nullif(p_reverse_name, ''), 'Relacionado'),
+      'type', 'relation',
+      'relationDatabaseId', p_database_id,
+      'limit', 'many',
+      'isBidirectional', true,
+      'reversePropertyId', p_column_id
+    );
+
+    if exists (
+      select 1 from public.databases d, jsonb_array_elements(d.columns) c
+      where d.id = p_relation_database_id and c ->> 'id' = v_reverse_id
+    ) then
+      update public.databases d
+      set columns = (
+        select jsonb_agg(case when c ->> 'id' = v_reverse_id then v_reverse_col else c end)
+        from jsonb_array_elements(d.columns) c
+      )
+      where d.id = p_relation_database_id;
+    else
+      update public.databases d
+      set columns = d.columns || jsonb_build_array(v_reverse_col)
+      where d.id = p_relation_database_id;
+    end if;
+  end if;
+
+  -- Ao configurar como "um item", remove os vínculos excedentes (mantém o mais
+  -- antigo por origem) e os espelhos correspondentes.
+  if coalesce(nullif(p_limit, ''), 'many') = 'one' then
+    perform public.relation_property_set_limit(p_database_id, p_column_id, 'one');
+  end if;
+
+  return v_reverse_id;
+end;
+$$;
+
+-- Atualiza o limite (um/vários). Ao virar "um", mantém o vínculo mais antigo de
+-- cada origem (e o espelho correspondente) e remove os excedentes.
+create or replace function public.relation_property_set_limit(
+  p_database_id uuid,
+  p_column_id text,
+  p_limit text
+)
+returns void
+language plpgsql
+security invoker
+as $$
+declare
+  v_reverse text;
+begin
+  select c ->> 'reversePropertyId'
+    into v_reverse
+  from public.databases d, jsonb_array_elements(d.columns) c
+  where d.id = p_database_id and c ->> 'id' = p_column_id;
+
+  update public.databases d
+  set columns = (
+    select jsonb_agg(
+      case when c ->> 'id' = p_column_id
+        then c || jsonb_build_object('limit', coalesce(nullif(p_limit, ''), 'many'))
+        else c end
+    )
+    from jsonb_array_elements(d.columns) c
+  )
+  where d.id = p_database_id
+    and exists (
+      select 1 from jsonb_array_elements(d.columns) c
+      where c ->> 'id' = p_column_id
+    );
+
+  if p_limit = 'one' then
+    create temp table _relation_excess on commit drop as
+      select id, source_item_id, target_item_id
+      from (
+        select id, source_item_id, target_item_id,
+               row_number() over (partition by source_item_id order by created_at, id) as rn
+        from public.relation_links
+        where property_id = p_column_id
+      ) t
+      where rn > 1;
+
+    delete from public.relation_links l
+    using _relation_excess e
+    where l.id = e.id;
+
+    if v_reverse is not null then
+      delete from public.relation_links m
+      using _relation_excess e
+      where m.property_id = v_reverse
+        and m.source_item_id = e.target_item_id
+        and m.target_item_id = e.source_item_id;
+    end if;
+
+    drop table _relation_excess;
+  end if;
+end;
+$$;
+
+-- Remove a propriedade de relação: coluna da origem, vínculos e espelho.
+create or replace function public.relation_property_delete(
+  p_database_id uuid,
+  p_column_id text
+)
+returns void
+language plpgsql
+security invoker
+as $$
+declare
+  v_reverse text;
+begin
+  select c ->> 'reversePropertyId'
+    into v_reverse
+  from public.databases d, jsonb_array_elements(d.columns) c
+  where d.id = p_database_id and c ->> 'id' = p_column_id;
+
+  delete from public.relation_links where property_id = p_column_id;
+
+  if v_reverse is not null then
+    perform public.relation_reverse_remove(v_reverse);
+  end if;
+
+  update public.databases d
+  set columns = coalesce((
+    select jsonb_agg(c)
+    from jsonb_array_elements(d.columns) c
+    where c ->> 'id' <> p_column_id
+  ), '[]'::jsonb)
+  where d.id = p_database_id;
+end;
+$$;
+
+-- Adiciona um vínculo (valida posse, duplicado e limite) e o espelho.
+create or replace function public.relation_link_add(
+  p_property_id text,
+  p_source_item_id uuid,
+  p_target_item_id uuid
+)
+returns uuid
+language plpgsql
+security invoker
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_limit text;
+  v_bidirectional boolean;
+  v_reverse text;
+  v_id uuid;
+begin
+  if v_user is null then
+    raise exception 'não autenticado';
+  end if;
+
+  select c ->> 'limit',
+         coalesce((c ->> 'isBidirectional')::boolean, false),
+         c ->> 'reversePropertyId'
+    into v_limit, v_bidirectional, v_reverse
+  from public.database_rows r
+  join public.databases d on d.id = r.database_id
+  cross join lateral jsonb_array_elements(d.columns) c
+  where r.id = p_source_item_id and c ->> 'id' = p_property_id;
+
+  if not found then
+    raise exception 'propriedade de relação não encontrada';
+  end if;
+
+  if not exists (select 1 from public.database_rows where id = p_target_item_id) then
+    raise exception 'item de destino não encontrado';
+  end if;
+
+  if v_limit = 'one'
+     and exists (
+       select 1 from public.relation_links
+       where property_id = p_property_id and source_item_id = p_source_item_id
+     )
+  then
+    raise exception 'Esta relação permite apenas um item.';
+  end if;
+
+  insert into public.relation_links (user_id, property_id, source_item_id, target_item_id)
+  values (v_user, p_property_id, p_source_item_id, p_target_item_id)
+  on conflict (property_id, source_item_id, target_item_id) do nothing
+  returning id into v_id;
+
+  if v_id is null then
+    select id into v_id
+    from public.relation_links
+    where property_id = p_property_id
+      and source_item_id = p_source_item_id
+      and target_item_id = p_target_item_id;
+  end if;
+
+  if v_bidirectional and v_reverse is not null then
+    insert into public.relation_links (user_id, property_id, source_item_id, target_item_id)
+    values (v_user, v_reverse, p_target_item_id, p_source_item_id)
+    on conflict (property_id, source_item_id, target_item_id) do nothing;
+  end if;
+
+  return v_id;
+end;
+$$;
+
+-- Remove um vínculo e o espelho correspondente (quando houver).
+create or replace function public.relation_link_remove(
+  p_property_id text,
+  p_source_item_id uuid,
+  p_target_item_id uuid
+)
+returns void
+language plpgsql
+security invoker
+as $$
+declare
+  v_reverse text;
+begin
+  select c ->> 'reversePropertyId'
+    into v_reverse
+  from public.database_rows r
+  join public.databases d on d.id = r.database_id
+  cross join lateral jsonb_array_elements(d.columns) c
+  where r.id = p_source_item_id and c ->> 'id' = p_property_id;
+
+  delete from public.relation_links
+  where property_id = p_property_id
+    and source_item_id = p_source_item_id
+    and target_item_id = p_target_item_id;
+
+  if v_reverse is not null then
+    delete from public.relation_links
+    where property_id = v_reverse
+      and source_item_id = p_target_item_id
+      and target_item_id = p_source_item_id;
+  end if;
+end;
+$$;
+
+-- Carrega em lote os vínculos das linhas informadas (evita N+1).
+create or replace function public.relation_links_for_rows(p_row_ids uuid[])
+returns table (property_id text, source_item_id uuid, target_item_id uuid)
+language sql
+security invoker
+stable
+as $$
+  select l.property_id, l.source_item_id, l.target_item_id
+  from public.relation_links l
+  where l.source_item_id = any(p_row_ids)
+  order by l.created_at, l.id;
+$$;
+
+-- Rollup calculado on-the-fly (somente leitura) para as linhas da página.
+-- p_configs: [{ "propertyId", "relationPropertyId", "targetPropertyId", "fn", "targetType" }]
+create or replace function public.rollup_values_for_rows(p_configs jsonb, p_row_ids uuid[])
+returns table (row_id uuid, property_id text, value jsonb)
+language sql
+security invoker
+stable
+as $$
+  with cfg as (
+    select c ->> 'propertyId' as property_id,
+           c ->> 'relationPropertyId' as relation_property_id,
+           c ->> 'targetPropertyId' as target_property_id,
+           c ->> 'fn' as fn,
+           coalesce(c ->> 'targetType', '') as target_type
+    from jsonb_array_elements(coalesce(p_configs, '[]'::jsonb)) c
+  ),
+  cells as (
+    select ri.row_id,
+           cfg.property_id,
+           cfg.fn,
+           cfg.target_type,
+           l.id as link_id,
+           l.created_at as link_created,
+           t.values -> cfg.target_property_id as cell
+    from unnest(p_row_ids) as ri(row_id)
+    cross join cfg
+    left join public.relation_links l
+      on l.property_id = cfg.relation_property_id
+     and l.source_item_id = ri.row_id
+    left join public.database_rows t on t.id = l.target_item_id
+  )
+  select
+    row_id,
+    property_id,
+    case fn
+      when 'count_all' then to_jsonb(count(link_id))
+      when 'count_filled' then to_jsonb(count(link_id) filter (where not public.rollup_is_empty(cell)))
+      when 'count_empty' then to_jsonb(count(link_id) - count(link_id) filter (where not public.rollup_is_empty(cell)))
+      when 'sum' then
+        case when count(link_id) = 0 then 'null'::jsonb
+             else to_jsonb(coalesce(sum(public.rollup_number(cell)), 0)) end
+      when 'avg' then to_jsonb(avg(public.rollup_number(cell)))
+      when 'median' then to_jsonb(percentile_cont(0.5) within group (order by public.rollup_number(cell)))
+      when 'min' then
+        case when target_type = 'number' then to_jsonb(min(public.rollup_number(cell)))
+             else to_jsonb(min(public.rollup_text(cell))) end
+      when 'max' then
+        case when target_type = 'number' then to_jsonb(max(public.rollup_number(cell)))
+             else to_jsonb(max(public.rollup_text(cell))) end
+      when 'range' then
+        case when count(public.rollup_number(cell)) = 0 then 'null'::jsonb
+             else to_jsonb(max(public.rollup_number(cell)) - min(public.rollup_number(cell))) end
+      when 'percent_checked' then
+        case when count(link_id) = 0 then to_jsonb(0)
+             else to_jsonb(round(100.0 * count(link_id) filter (where public.rollup_text(cell) = 'true') / count(link_id), 1)) end
+      when 'earliest_date' then to_jsonb(min(public.rollup_text(cell)))
+      when 'latest_date' then to_jsonb(max(public.rollup_text(cell)))
+      when 'show_original' then to_jsonb(array_remove(array_agg(public.rollup_text(cell) order by link_created), null))
+      else 'null'::jsonb
+    end as value
+  from cells
+  group by row_id, property_id, fn, target_type;
+$$;
+
+-- Limpeza ao excluir um database: remove espelhos que apontavam para ele.
+create or replace function public.relation_cleanup_for_database(p_database_id uuid)
+returns void
+language plpgsql
+security invoker
+as $$
+declare
+  r record;
+begin
+  for r in
+    select d.id as db_id, c ->> 'id' as col_id
+    from public.databases d, jsonb_array_elements(d.columns) c
+    where c ->> 'relationDatabaseId' = p_database_id::text
+  loop
+    delete from public.relation_links where property_id = r.col_id;
+    update public.databases d
+    set columns = coalesce((
+      select jsonb_agg(c)
+      from jsonb_array_elements(d.columns) c
+      where c ->> 'id' <> r.col_id
+    ), '[]'::jsonb)
+    where d.id = r.db_id;
+  end loop;
+end;
+$$;
 
 -- ----------------------------------------------------------------------------
 -- Tabela de modelos de página (templates) de um database
@@ -318,6 +1189,30 @@ create policy "Usuário atualiza modelos dos seus databases"
 drop policy if exists "Usuário remove modelos dos seus databases" on public.database_templates;
 create policy "Usuário remove modelos dos seus databases"
   on public.database_templates for delete
+  using (auth.uid() = user_id);
+
+-- Vínculos de relação: cada usuário só acessa os próprios vínculos.
+alter table public.relation_links enable row level security;
+
+drop policy if exists "Vínculos visíveis apenas pelo dono" on public.relation_links;
+create policy "Vínculos visíveis apenas pelo dono"
+  on public.relation_links for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Usuário insere seus próprios vínculos" on public.relation_links;
+create policy "Usuário insere seus próprios vínculos"
+  on public.relation_links for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Usuário atualiza seus próprios vínculos" on public.relation_links;
+create policy "Usuário atualiza seus próprios vínculos"
+  on public.relation_links for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Usuário remove seus próprios vínculos" on public.relation_links;
+create policy "Usuário remove seus próprios vínculos"
+  on public.relation_links for delete
   using (auth.uid() = user_id);
 
 -- ----------------------------------------------------------------------------

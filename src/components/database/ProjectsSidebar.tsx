@@ -236,14 +236,14 @@ function CategoriesManagerPopover({
             onChange={(e) => setNewName(e.target.value)}
             placeholder="Nova categoria"
             autoComplete="off"
-            className="h-9 min-w-0 flex-1"
+            className="h-[30px] min-w-0 flex-1"
             aria-label="Nova categoria"
           />
           <Button
             type="submit"
             variant="ghost"
             size="icon"
-            className="h-9 w-9 flex-none"
+            className="h-[30px] w-[30px] flex-none"
             title="Criar categoria"
             aria-label="Criar categoria"
             disabled={!newName.trim()}
@@ -326,10 +326,19 @@ function CategoriesManagerPopover({
                         />
                         <span className="min-w-0 flex-1 truncate">{name}</span>
                       </button>
-                      <Trash2
-                        className="mr-1 h-3.5 w-3.5 flex-none text-muted-foreground opacity-0 group-hover:opacity-100"
-                        aria-hidden
-                      />
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          if (id) onDeleteCategory(id);
+                        }}
+                        disabled={id === null}
+                        aria-label={`Excluir categoria ${name}`}
+                        title="Excluir categoria"
+                        className="mr-0.5 flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 disabled:pointer-events-none"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
                     </div>
                   </li>
                 </Fragment>
@@ -723,7 +732,7 @@ export function ProjectsSidebar({
           onClick={toggleCollapsed}
           aria-label="Expandir sidebar de projetos"
           title="Expandir sidebar de projetos"
-          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <PanelLeftOpen className="h-4 w-4" />
         </button>
@@ -732,7 +741,7 @@ export function ProjectsSidebar({
           onClick={openCreate}
           aria-label="Novo projeto"
           title="Novo projeto"
-          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Plus className="h-4 w-4" />
         </button>
@@ -741,7 +750,7 @@ export function ProjectsSidebar({
           onClick={(e) => setCategoriesAnchor(e.currentTarget)}
           aria-label="Gerenciar categorias"
           title="Gerenciar categorias"
-          className="flex h-7 w-7 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Tags className="h-4 w-4" />
         </button>
@@ -805,7 +814,7 @@ export function ProjectsSidebar({
             placeholder="Buscar projeto"
             autoComplete="off"
             aria-label="Buscar projeto pelo nome"
-            className="h-8 pl-7"
+            className="pl-7"
           />
         </div>
 
@@ -978,7 +987,9 @@ export function ProjectsSidebar({
                         >
                           <div
                             className={cn(
-                              "group relative flex items-center",
+                              "group relative flex items-center rounded hover:bg-accent",
+                              isActive && "bg-primary/10",
+                              optionsOpen && "bg-accent",
                               isDragging && "opacity-50",
                             )}
                           >
@@ -1001,7 +1012,7 @@ export function ProjectsSidebar({
                               aria-label={`Reordenar projeto ${project.name}`}
                               title="Arrastar para reordenar"
                               className={cn(
-                                "absolute left-0 z-10 flex h-6 w-6 cursor-grab items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground active:cursor-grabbing",
+                                "absolute left-0 z-10 flex h-6 w-6 cursor-grab items-center justify-center rounded text-muted-foreground hover:text-foreground active:cursor-grabbing",
                                 isDragging
                                   ? "opacity-100"
                                   : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
@@ -1014,17 +1025,10 @@ export function ProjectsSidebar({
                               onClick={() => onOpenProject(project.id)}
                               title={project.name}
                               className={cn(
-                                "flex min-w-0 flex-1 items-center gap-2 rounded py-1.5 pl-6 pr-6 text-left text-sm hover:bg-accent",
-                                isActive && "bg-primary/10 font-medium text-primary",
-                                optionsOpen && "bg-accent",
+                                "flex min-w-0 flex-1 items-center gap-2 rounded py-1.5 pl-6 pr-6 text-left text-sm",
+                                isActive && "font-medium text-primary",
                               )}
                             >
-                              <span
-                                className={cn(
-                                  "h-1.5 w-1.5 flex-none rounded-full",
-                                  project.color ?? group.color,
-                                )}
-                              />
                               <span className="min-w-0 flex-1 truncate">{project.name}</span>
                             </button>
                             <button
@@ -1036,7 +1040,7 @@ export function ProjectsSidebar({
                               aria-label={`Opções do projeto ${project.name}`}
                               title="Opções do projeto"
                               className={cn(
-                                "absolute right-1 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground",
+                                "absolute right-1 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground",
                                 optionsOpen
                                   ? "opacity-100"
                                   : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",

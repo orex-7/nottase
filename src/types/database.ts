@@ -7,10 +7,63 @@ export type ColumnType =
   | "multi_select"
   | "date"
   | "checkbox"
-  | "person";
+  | "person"
+  | "relation"
+  | "rollup";
 
 /** Formato de exibição de uma coluna do tipo número (estilo Notion). */
 export type NumberFormat = "plain" | "separators" | "percent" | "currency";
+
+/** Limite de vínculos de uma propriedade de relação (estilo Notion). */
+export type RelationLimit = "one" | "many";
+
+/** Função de agregação de um rollup (estilo Notion). */
+export type RollupFunction =
+  | "count_all"
+  | "count_filled"
+  | "count_empty"
+  | "sum"
+  | "avg"
+  | "min"
+  | "max"
+  | "median"
+  | "range"
+  | "percent_checked"
+  | "show_original"
+  | "earliest_date"
+  | "latest_date";
+
+/**
+ * Função de agregação exibida no **rodapé** de uma coluna numérica (estilo
+ * Notion). Calculada no servidor sobre todas as linhas do database, respeitando
+ * a busca e os filtros da visão ativa.
+ */
+export type CalcFunction =
+  | "count_all"
+  | "count_filled"
+  | "count_empty"
+  | "count_unique"
+  | "percent_filled"
+  | "percent_empty"
+  | "sum"
+  | "avg"
+  | "median"
+  | "min"
+  | "max"
+  | "range";
+
+/**
+ * Configuração de uma propriedade do tipo `rollup`: agrega uma propriedade do
+ * item alvo (via uma propriedade de relação da mesma tabela). Rollup de rollup é
+ * proibido (elimina ciclos).
+ */
+export interface RollupConfig {
+  /** Id da coluna de relação da própria tabela (origem dos itens alvo). */
+  relationPropertyId: string;
+  /** Id da propriedade lida no item alvo. */
+  targetPropertyId: string;
+  fn: RollupFunction;
+}
 
 /** Definição de uma coluna/propriedade da tabela. */
 export interface Column {
@@ -41,6 +94,30 @@ export interface Column {
   currency?: string;
   /** Opções configuráveis para colunas do tipo select/multi_select. */
   options?: SelectOption[];
+  /**
+   * Id do database alvo quando `type === "relation"`. Os **vínculos** ficam na
+   * tabela `relation_links` (não mais em `values`).
+   */
+  relationDatabaseId?: string;
+  /**
+   * Quando `true`, a relação cria uma coluna espelho no database alvo
+   * (bidirecional). O espelho é criado/removido por RPC.
+   */
+  isBidirectional?: boolean;
+  /**
+   * Id da coluna espelho (na outra database) quando `isBidirectional`. É apenas
+   * um id de coluna (sem FK) — a limpeza depende das RPCs de relação.
+   */
+  reversePropertyId?: string;
+  /** Limite de vínculos por item quando `type === "relation"` (default "many"). */
+  limit?: RelationLimit;
+  /** Configuração quando `type === "rollup"`. */
+  rollup?: RollupConfig;
+  /**
+   * Agregação exibida no rodapé da coluna (somente `type === "number"`).
+   * Ausente equivale a "Nenhum" (sem rodapé para a coluna).
+   */
+  calculate?: CalcFunction;
 }
 
 /**
@@ -70,6 +147,8 @@ export interface DbRow {
   id: string;
   /** Valores indexados pelo id da coluna. */
   values: Record<string, CellValue>;
+  /** Posição de ordenação (keyset da paginação). Opcional no domínio. */
+  position?: number;
 }
 
 /** Frequência base de uma regra de recorrência (estilo RRULE). */
@@ -280,6 +359,11 @@ export interface Database {
   icon: string | null;
   /** Projeto ao qual o database pertence (`null` para databases sem projeto). */
   projectId: string | null;
+  /**
+   * Visão vinculada: id do database de origem cujas propriedades e itens este
+   * database exibe (editar em um reflete no outro). `null`/ausente = próprio.
+   */
+  linkedDatabaseId?: string | null;
   columns: Column[];
   rows: DbRow[];
   /** Modelos de página disponíveis para os itens deste database. */

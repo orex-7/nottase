@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Loader2, X } from "lucide-react";
 
-import { fetchDatabaseById, updateRowValues } from "@/lib/database";
+import { fetchDatabaseById, fetchRowById, updateRowValues } from "@/lib/database";
 import { cn } from "@/lib/utils";
 import { formatNumberValue } from "@/lib/number-format";
 import type { CellValue, Column, Database, DbRow } from "@/types/database";
@@ -84,14 +84,19 @@ export function DatabaseItemPopover({
     setError(null);
     (async () => {
       try {
-        const db = await fetchDatabaseById(databaseId);
+        // Metadados do database + a linha pelo id (as linhas não vêm todas de
+        // uma vez: a Tabela é paginada).
+        const [db, fetchedRow] = await Promise.all([
+          fetchDatabaseById(databaseId),
+          fetchRowById(rowId),
+        ]);
         if (cancelled) return;
         if (!db) {
           setError("Database não encontrado.");
           return;
         }
         setDatabase(db);
-        setRow(db.rows.find((r) => r.id === rowId) ?? null);
+        setRow(fetchedRow);
       } catch {
         if (!cancelled) setError("Não foi possível carregar as propriedades.");
       } finally {
@@ -324,6 +329,27 @@ function PropertyControl({ column, value, onChange }: PropertyFieldProps) {
   if (column.type === "number") {
     return (
       <NumberField column={column} value={value} onChange={onChange} />
+    );
+  }
+
+  // relation → somente leitura (a relação é editada na tabela de origem)
+  if (column.type === "relation") {
+    const count = Array.isArray(value) ? value.length : 0;
+    return (
+      <span className="px-1 py-1 text-sm text-muted-foreground">
+        {count > 0
+          ? `${count} ${count === 1 ? "item relacionado" : "itens relacionados"}`
+          : "Sem itens relacionados"}
+      </span>
+    );
+  }
+
+  // rollup → somente leitura (valor calculado; não é gravado na célula)
+  if (column.type === "rollup") {
+    return (
+      <span className="px-1 py-1 text-sm text-muted-foreground">
+        Valor calculado
+      </span>
     );
   }
 

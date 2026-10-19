@@ -17,7 +17,7 @@ import {
   databaseIdFromEventId,
   databaseRowIdFromEventId,
 } from "@/lib/database-calendar";
-import { fetchDatabases } from "@/lib/database";
+import { fetchAllDatabaseRows, fetchDatabases } from "@/lib/database";
 import { runAutoTemplates } from "@/lib/database-recurrence";
 import { fetchEventsInRange } from "@/lib/events";
 import { useCalendarStore } from "@/store/useCalendarStore";
@@ -115,12 +115,29 @@ export function CalendarProvider({ userName, userEmail }: CalendarProviderProps)
         const wanted = new Set(sidebarDatabaseIds.split(","));
         const all = await fetchDatabases();
         if (cancelled) return;
+        const byId = new Map(all.map((db) => [db.id, db]));
         const wantedDatabases = all.filter((db) => wanted.has(db.id));
+        // As linhas não vêm mais em `fetchDatabases` (a Tabela é paginada):
+        // carrega o conjunto completo dos databases fixados, sob demanda. Numa
+        // **visão vinculada**, colunas e itens vêm do database de origem.
+        const withRows = await Promise.all(
+          wantedDatabases.map(async (db) => {
+            const source = db.linkedDatabaseId
+              ? byId.get(db.linkedDatabaseId)
+              : null;
+            return {
+              ...db,
+              columns: source?.columns ?? db.columns,
+              rows: await fetchAllDatabaseRows(source?.id ?? db.id),
+            };
+          }),
+        );
+        if (cancelled) return;
         // Gera automaticamente os itens que "venceram" para os modelos
         // recorrentes (ex.: um hábito diário). Idempotente: só cria o que falta.
-        const generated = await runAutoTemplates(wantedDatabases);
+        const generated = await runAutoTemplates(withRows);
         if (cancelled) return;
-        const merged = wantedDatabases.map((db) => {
+        const merged = withRows.map((db) => {
           const change = generated.find((g) => g.databaseId === db.id);
           return change ? change.database : db;
         });

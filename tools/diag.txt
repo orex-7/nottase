@@ -1,0 +1,4 @@
+﻿DIAG pairs=171 repl=148 hasPadr=False
+DIAG padrKeys=Padr[\uFFFD?]o padrVal=
+DIAG textHasPadrQ=True
+DIAG after padr?o=True

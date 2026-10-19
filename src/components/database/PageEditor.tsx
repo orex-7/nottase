@@ -1337,7 +1337,7 @@ export function PageEditor({
                 <input
                   type="url"
                   placeholder="Cole a URL da imagem"
-                  className="w-full rounded-md border bg-background px-3 py-2 text-sm outline-none"
+                  className="h-[30px] w-full rounded-md border bg-background px-3 text-sm outline-none"
                   onKeyDown={(e) => {
                     if (e.key !== "Enter") return;
                     const url = e.currentTarget.value.trim();
@@ -1723,7 +1723,7 @@ export function PageEditor({
                     type="button"
                     aria-label="Alinhar à esquerda"
                     onClick={() => setCellAlignment("left")}
-                    className="flex h-7 flex-1 items-center justify-center rounded transition-colors hover:bg-accent"
+                    className="flex h-[30px] flex-1 items-center justify-center rounded transition-colors hover:bg-accent"
                   >
                     <AlignLeft className="h-4 w-4" />
                   </button>
@@ -1731,7 +1731,7 @@ export function PageEditor({
                     type="button"
                     aria-label="Centralizar"
                     onClick={() => setCellAlignment("center")}
-                    className="flex h-7 flex-1 items-center justify-center rounded transition-colors hover:bg-accent"
+                    className="flex h-[30px] flex-1 items-center justify-center rounded transition-colors hover:bg-accent"
                   >
                     <AlignCenter className="h-4 w-4" />
                   </button>
@@ -1739,7 +1739,7 @@ export function PageEditor({
                     type="button"
                     aria-label="Alinhar à direita"
                     onClick={() => setCellAlignment("right")}
-                    className="flex h-7 flex-1 items-center justify-center rounded transition-colors hover:bg-accent"
+                    className="flex h-[30px] flex-1 items-center justify-center rounded transition-colors hover:bg-accent"
                   >
                     <AlignRight className="h-4 w-4" />
                   </button>
@@ -1937,7 +1937,7 @@ function TableInsertForm({
             max={20}
             value={rows}
             onChange={(e) => onRowsChange(Number(e.currentTarget.value) || 1)}
-            className="w-full rounded-md border bg-background px-2 py-1.5 text-sm text-foreground outline-none"
+            className="h-[30px] w-full rounded-md border bg-background px-2 text-sm text-foreground outline-none"
           />
         </label>
         <label className="flex flex-col gap-1 text-xs text-muted-foreground">
@@ -1948,7 +1948,7 @@ function TableInsertForm({
             max={12}
             value={cols}
             onChange={(e) => onColsChange(Number(e.currentTarget.value) || 1)}
-            className="w-full rounded-md border bg-background px-2 py-1.5 text-sm text-foreground outline-none"
+            className="h-[30px] w-full rounded-md border bg-background px-2 text-sm text-foreground outline-none"
           />
         </label>
       </div>
