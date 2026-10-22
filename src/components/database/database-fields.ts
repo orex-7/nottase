@@ -383,6 +383,48 @@ export function kanbanGroupColumns(columns: Column[]): Column[] {
 }
 
 /**
+ * Move a coluna `draggedId` para antes de `beforeId` (`null` = para o fim),
+ * preservando as demais. Usado no arraste das propriedades no cabeçalho da
+ * Tabela. Devolve o mesmo array quando não há mudança.
+ */
+export function moveColumnTo(
+  columns: Column[],
+  draggedId: string,
+  beforeId: string | null,
+): Column[] {
+  if (draggedId === beforeId) return columns;
+  const dragged = columns.find((c) => c.id === draggedId);
+  if (!dragged) return columns;
+  const rest = columns.filter((c) => c.id !== draggedId);
+  const at = beforeId ? rest.findIndex((c) => c.id === beforeId) : -1;
+  const insertAt = at === -1 ? rest.length : at;
+  const next = [...rest];
+  next.splice(insertAt, 0, dragged);
+  return next;
+}
+
+/**
+ * Aplica ao array completo de colunas a ordem `order` (ids das colunas
+ * **visíveis**), mantendo as colunas ocultas nas mesmas posições. Usado para
+ * gravar a ordem depois do arraste das propriedades (a pré-visualização só
+ * reordena as visíveis). Devolve o mesmo array quando `order` não casa.
+ */
+export function applyVisibleColumnOrder(
+  columns: Column[],
+  visibleIds: string[],
+  order: string[],
+): Column[] {
+  const byId = new Map(columns.map((c) => [c.id, c]));
+  const ordered = order
+    .map((id) => byId.get(id))
+    .filter((c): c is Column => c !== undefined);
+  if (ordered.length !== visibleIds.length) return columns;
+  const visible = new Set(visibleIds);
+  let i = 0;
+  return columns.map((c) => (visible.has(c.id) ? ordered[i++] : c));
+}
+
+/**
  * Escolhe a coluna padrão de agrupamento do Kanban: prefere status, depois
  * seleção; cai para a primeira opção disponível. Devolve `null` se não houver
  * nenhuma coluna agrupável.

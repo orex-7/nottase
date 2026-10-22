@@ -2,14 +2,32 @@
 
 import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import {
+  DndContext,
+  DragOverlay,
+  PointerSensor,
+  useDraggable,
+  useDroppable,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type DragMoveEvent,
+  type DragStartEvent,
+  type Modifier,
+} from "@dnd-kit/core";
+import {
+  restrictToHorizontalAxis,
+  restrictToVerticalAxis,
+} from "@dnd-kit/modifiers";
 import type {
+  CSSProperties,
   FocusEvent as ReactFocusEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
+  ReactNode,
 } from "react";
 import {
   AlignLeft,
-  ArrowLeft,
   ArrowLeftRight,
   Bell,
   Bookmark,
@@ -83,9 +101,10 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DatabasesScreen } from "@/components/database/DatabasesScreen";
+import type { NewDatabaseInput } from "@/components/database/DatabasesScreen";
 import type { NewProjectInput } from "@/components/database/ProjectsScreen";
 import { ProjectsSidebar } from "@/components/database/ProjectsSidebar";
+import { WorkspaceEmptyState } from "@/components/database/WorkspaceEmptyState";
 import { PageEditor } from "@/components/database/PageEditor";
 import { RowPageContent } from "@/components/database/RowPageContent";
 import { KanbanBoard } from "@/components/database/KanbanBoard";
@@ -98,6 +117,7 @@ import {
 import { TableSettingsPopover } from "@/components/database/TableSettingsPopover";
 import {
   ACTIONS_COLUMN_WIDTH,
+  applyVisibleColumnOrder,
   CALC_FUNCTIONS,
   calcFunctionLabel,
   cellAreaClick,
@@ -115,6 +135,7 @@ import {
   kanbanGroupColumns,
   MAX_COLUMN_WIDTH,
   minColumnWidth,
+  moveColumnTo,
   newColumnId,
   newOptionId,
   NUMBER_FORMATS,
@@ -123,6 +144,7 @@ import {
   optionsForColumn,
   relatedDatabaseFor,
   ROW_GUTTER_WIDTH,
+  rowTitleOf,
   STATUS_CATEGORIES,
   STATUS_OPTIONS,
   TAG_OPTIONS,
@@ -188,7 +210,12 @@ import {
   type DbViewType,
   type PersistedViews,
 } from "@/components/database/database-views";
-import { useCalendarStore } from "@/store/useCalendarStore";
+import {
+  useCalendarStore,
+  type DatabaseFocusRequest,
+} from "@/store/useCalendarStore";
+import type { WorkspaceSearchResult } from "@/components/database/workspace-search";
+import { OpenDatabaseBar } from "@/components/database/OpenDatabaseBar";
 import { cn } from "@/lib/utils";
 import { ensureHtml } from "@/lib/markdown";
 import { todayISO } from "@/lib/database-recurrence";
@@ -209,16 +236,19 @@ import {
   createTemplate,
   deleteDatabase,
   deleteProject,
+  type OpenDatabasesState,
   deleteProjectCategory,
   deleteRow,
   deleteTemplate,
   emptyValuesFor,
   ensureDefaultProject,
   fetchDatabases,
+  fetchOpenDatabases,
   fetchProjectCategories,
   fetchProjects,
   reorderProjectCategories,
   reorderProjects,
+  saveOpenDatabases,
   updateDatabaseColumns,
   updateDatabaseIcon,
   updateDatabaseName,
@@ -227,8 +257,8 @@ import {
   updateRowPositions,
   updateRowValues,
   DEFAULT_PROJECT_NAME,
+  EMPTY_OPEN_DATABASES,
   createRowAtEnd,
-  countDatabaseRows,
   fetchRowById,
   fetchDatabaseById,
   updateRowCell,
@@ -285,6 +315,12 @@ import {
  */
 
 /**
+ * Debounce (ms) do salvamento da navegação entre databases abertos: evita uma
+ * escrita no servidor a cada clique/abertura.
+ */
+const OPEN_DATABASES_SAVE_DEBOUNCE_MS = 600;
+
+/**
  * Linha de preenchimento (spacer) usada na virtualização da tabela: ocupa o
  * espaço das linhas fora da área visível, para a barra de rolagem refletir o
  * total real. É uma única célula com `colSpan` (não distorce o `<colgroup>`) e
@@ -295,6 +331,122 @@ function TableSpacerRow({ height, colSpan }: { height: number; colSpan: number }
     <tr aria-hidden>
       <td colSpan={colSpan} style={{ height, padding: 0, border: 0 }} />
     </tr>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
+/* Drag and drop (dnd-kit)                                                    */
+/* -------------------------------------------------------------------------- */
+
+/** Id do item arrastável do cabeçalho de uma propriedade. */
+function columnDragId(columnId: string): string {
+  return `column:${columnId}`;
+}
+
+/**
+ * `<th>` de uma propriedade registrado como **arrastável** e **soltável**
+ * (dnd-kit). O conteúdo continua vindo de `children` (o JSX do cabeçalho fica
+ * onde está); só a célula e o registro no DnD vivem aqui — necessário porque os
+ * hooks do dnd-kit não podem ser chamados dentro de um `.map`.
+ */
+function ColumnHeaderCell({
+  columnId,
+  className,
+  isAnchor,
+  anchorRef,
+  children,
+}: {
+  columnId: string;
+  className?: string;
+  /** Se este é o cabeçalho com o editor aberto (dono de `anchorRef`). */
+  isAnchor?: boolean;
+  /**
+   * Ref do cabeçalho do editor de coluna (posicionamento do popover). Tipo
+   * estrutural (não `RefObject`) para permitir atribuir `.current` aqui.
+   */
+  anchorRef?: { current: HTMLTableCellElement | null };
+  children: ReactNode;
+}) {
+  const { setNodeRef, listeners } = useDraggable({
+    id: columnDragId(columnId),
+    data: { type: "column", columnId },
+  });
+  const { setNodeRef: setDropRef } = useDroppable({
+    id: `column-drop:${columnId}`,
+    data: { type: "column", columnId },
+  });
+  // Ref estável: sem isso o registro no dnd-kit seria refeito a cada render.
+  const setRefs = useCallback(
+    (node: HTMLTableCellElement | null) => {
+      setNodeRef(node);
+      setDropRef(node);
+      if (isAnchor && anchorRef) anchorRef.current = node;
+    },
+    [setNodeRef, setDropRef, isAnchor, anchorRef],
+  );
+  return (
+    <th
+      ref={setRefs}
+      {...listeners}
+      data-column-cell={columnId}
+      className={className}
+    >
+      {children}
+    </th>
+  );
+}
+
+/** Linha da Tabela registrada como **soltável** (dnd-kit). */
+function DropRow({
+  rowId,
+  className,
+  dropBefore,
+  children,
+}: {
+  rowId: string;
+  className?: string;
+  /** Marca a barra de inserção (mesmo CSS do arraste nativo anterior). */
+  dropBefore: boolean;
+  children: ReactNode;
+}) {
+  const { setNodeRef } = useDroppable({
+    id: `row:${rowId}`,
+    data: { type: "row", rowId },
+  });
+  // Ref estável: evita re-registrar o droppable a cada render das linhas.
+  const setRef = useCallback(
+    (node: HTMLTableRowElement | null) => setNodeRef(node),
+    [setNodeRef],
+  );
+  return (
+    <tr
+      ref={setRef}
+      data-row-id={rowId}
+      className={className}
+      data-drop-before={dropBefore ? "" : undefined}
+    >
+      {children}
+    </tr>
+  );
+}
+
+/** Alça de arraste de uma linha (gutter), registrada no dnd-kit. */
+function RowDragHandle({ rowId }: { rowId: string }) {
+  const { setNodeRef, listeners } = useDraggable({
+    id: `row-handle:${rowId}`,
+    data: { type: "row", rowId },
+  });
+  return (
+    <button
+      type="button"
+      ref={setNodeRef}
+      {...listeners}
+      aria-label="Arrastar linha para reordenar"
+      title="Arrastar para reordenar"
+      className="flex h-6 w-6 flex-none cursor-grab items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground active:cursor-grabbing focus-visible:opacity-100 group-hover:opacity-100"
+    >
+      <GripVertical className="h-3.5 w-3.5" />
+    </button>
   );
 }
 
@@ -464,8 +616,6 @@ interface DatabaseTableProps {
   onDeleteDatabase: (id: string) => void;
   /** Define (ou limpa, com `null`) o ícone escolhido do database. */
   onUpdateIcon: (id: string, icon: string | null) => void;
-  /** Volta para a lista de databases. */
-  onBack: () => void;
   /**
    * Abre outro database pelo id. Usado pelo link ao lado do nome: quando este
    * database tem uma coluna de relação configurada, o link leva ao database de
@@ -487,6 +637,13 @@ interface DatabaseTableProps {
    * (usado pelo link ao lado do nome e para marcar a visão). `null` caso não seja.
    */
   linkedDatabaseId: string | null;
+  /**
+   * Foco a aplicar ao abrir (paleta de busca global): aba, propriedade, item ou
+   * diálogo de modelos. Aplicado uma única vez por pedido.
+   */
+  focusRequest?: DatabaseFocusRequest | null;
+  /** Notifica que o foco pendente foi aplicado (o wrapper limpa o pedido). */
+  onFocusApplied?: () => void;
 }
 
 function DatabaseTable({
@@ -506,10 +663,11 @@ function DatabaseTable({
   onDeleteTemplate,
   onApplyTemplate,
   onDeleteDatabase,
-  onBack,
   onOpenDatabase,
   onError,
   onPatchDatabase,
+  focusRequest,
+  onFocusApplied,
 }: DatabaseTableProps) {
   const { id: databaseId, columns, rows, name: title, icon, templates } = database;
   const TitleIcon = databaseIcon(icon);
@@ -546,6 +704,9 @@ function DatabaseTable({
     [viewId, onRename],
   );
   const [query, setQuery] = useState("");
+  /** Busca da tabela expandida (a barra mostra só a lupa até clicar nela). */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const [openCell, setOpenCell] = useState<string | null>(null);
   /** Posição (viewport) do popover do seletor da célula de relação aberta. */
   const [relationCellPos, setRelationCellPos] = useState<{
@@ -669,6 +830,173 @@ function DatabaseTable({
   const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
   /** Id da linha antes da qual o item arrastado será solto (null = no fim). */
   const [rowDropBeforeId, setRowDropBeforeId] = useState<string | null>(null);
+  /** Id da coluna (propriedade) sendo arrastada pelo cabeçalho (reordenação). */
+  const [draggingColumnId, setDraggingColumnId] = useState<string | null>(null);
+  /**
+   * Pré-visualização da ordem das colunas **visíveis** enquanto uma propriedade
+   * é arrastada: as demais "escorregam" para o lado em tempo real. `null` = sem
+   * arraste (vale a ordem real).
+   */
+  const [columnDragOrder, setColumnDragOrder] = useState<Column[] | null>(null);
+  /**
+   * Tamanho (px) do cabeçalho arrastado, medido ao iniciar o arraste: a prévia
+   * (overlay do dnd-kit) fica idêntica à célula da propriedade.
+   */
+  const [draggingColumnBox, setDraggingColumnBox] = useState<{
+    width: number;
+    height: number;
+  } | null>(null);
+
+  // --- Drag and drop (dnd-kit) --------------------------------------------
+  const sensors = useSensors(
+    // Uma pequena distância evita que um clique simples vire arraste — o clique
+    // continua abrindo o editor da propriedade.
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+  );
+
+  /** Restringe ao eixo: horizontal para propriedades, vertical para linhas. */
+  const dragAxisModifier: Modifier = useCallback(
+    (args) =>
+      args.active?.data.current?.type === "row"
+        ? restrictToVerticalAxis(args)
+        : restrictToHorizontalAxis(args),
+    [],
+  );
+
+  /** Propriedade/linha em arraste (conteúdo do overlay). */
+  const draggingColumn = useMemo(
+    () =>
+      draggingColumnId
+        ? (columns.find((c) => c.id === draggingColumnId) ?? null)
+        : null,
+    [columns, draggingColumnId],
+  );
+  /** Ícone da propriedade em arraste (usado no overlay do dnd-kit). */
+  const DraggingColumnIcon = draggingColumn ? columnIcon(draggingColumn) : null;
+
+  /** Centro do item arrastado (no eixo do arraste), em coordenadas da tela. */
+  function draggedCenter(event: DragMoveEvent | DragEndEvent): number | null {
+    const rect = event.active.rect.current.translated;
+    if (!rect) return null;
+    return event.active.data.current?.type === "row"
+      ? rect.top + rect.height / 2
+      : rect.left + rect.width / 2;
+  }
+
+  function handleDragStart(event: DragStartEvent) {
+    const data = event.active.data.current;
+    if (data?.type === "column") {
+      const columnId = String(data.columnId);
+      setDraggingColumnId(columnId);
+      setColumnDragOrder(visibleColumns);
+      // Mede a célula para a prévia ficar com o mesmo tamanho (largura/altura).
+      const cell = tableHeadRef.current?.querySelector<HTMLTableCellElement>(
+        `[data-column-cell="${columnId}"]`,
+      );
+      const rect = cell?.getBoundingClientRect();
+      setDraggingColumnBox(
+        rect ? { width: rect.width, height: rect.height } : null,
+      );
+      return;
+    }
+    if (data?.type === "row") setDraggingRowId(String(data.rowId));
+  }
+
+  function handleDragMove(event: DragMoveEvent) {
+    const data = event.active.data.current;
+    const center = draggedCenter(event);
+    if (center === null) return;
+
+    if (data?.type === "column") {
+      const draggedId = String(data.columnId);
+      // Mede o DOM (que já reflete a pré-visualização) para achar a coluna sob o
+      // centro do arraste e move a arrastada para antes/depois dela.
+      const cells = tableHeadRef.current?.querySelectorAll<HTMLTableCellElement>(
+        "[data-column-cell]",
+      );
+      let targetId: string | null = null;
+      let after = false;
+      let lastId: string | null = null;
+      if (cells) {
+        for (const cell of Array.from(cells)) {
+          const id = cell.dataset.columnCell ?? null;
+          if (!id || id === draggedId) continue;
+          lastId = id;
+          const rect = cell.getBoundingClientRect();
+          if (center >= rect.left && center <= rect.right) {
+            targetId = id;
+            after = center - rect.left > rect.width / 2;
+          }
+        }
+      }
+      if (!targetId) {
+        // Fora das colunas: se o centro passou da última, vai para o fim.
+        const last = lastId
+          ? tableHeadRef.current?.querySelector<HTMLTableCellElement>(
+              `[data-column-cell="${lastId}"]`,
+            )
+          : null;
+        const rect = last?.getBoundingClientRect();
+        if (!lastId || !rect || center <= rect.right) return;
+        targetId = lastId;
+        after = true;
+      }
+      setColumnDragOrder((cur) => {
+        const base = cur ?? visibleColumns;
+        const idx = base.findIndex((c) => c.id === targetId);
+        if (idx === -1) return base;
+        const beforeId = after ? (base[idx + 1]?.id ?? null) : targetId;
+        return moveColumnTo(base, draggedId, beforeId);
+      });
+      return;
+    }
+
+    if (data?.type === "row") {
+      const rows = tableScrollRef.current?.querySelectorAll<HTMLTableRowElement>(
+        "tr[data-row-id]",
+      );
+      if (!rows) return;
+      let next: string | null | undefined;
+      for (const tr of Array.from(rows)) {
+        const rect = tr.getBoundingClientRect();
+        if (center < rect.top || center > rect.bottom) continue;
+        const id = tr.dataset.rowId ?? null;
+        if (!id) continue;
+        next =
+          center - rect.top > rect.height / 2
+            ? ((tr.nextElementSibling as HTMLTableRowElement | null)?.dataset
+                .rowId ?? null)
+            : id;
+        break;
+      }
+      if (next === undefined) return;
+      setRowDropBeforeId((cur) => (cur === next ? cur : next));
+    }
+  }
+
+  function handleDragEnd(event: DragEndEvent) {
+    const data = event.active.data.current;
+    if (data?.type === "column") {
+      commitColumnDrag();
+      return;
+    }
+    if (data?.type === "row") {
+      const draggedId = String(data.rowId);
+      const beforeId = rowDropBeforeId;
+      setDraggingRowId(null);
+      setRowDropBeforeId(null);
+      moveRow(draggedId, beforeId);
+    }
+  }
+
+  function handleDragCancel() {
+    setDraggingColumnId(null);
+    setColumnDragOrder(null);
+    setDraggingColumnBox(null);
+    setDraggingRowId(null);
+    setRowDropBeforeId(null);
+  }
+
   /** Id da linha recém-criada pelo botão "+" que deve receber foco no 1º campo. */
   const [pendingFocusRowId, setPendingFocusRowId] = useState<string | null>(null);
   /**
@@ -806,6 +1134,55 @@ function DatabaseTable({
   const [kanbanColumnId, setKanbanColumnId] = useState<string | null>(
     () => loadPersistedViews(viewId)?.kanbanColumnId ?? defaultKanbanColumnId(columns),
   );
+
+  // --- Foco vindo da paleta de busca global -------------------------------
+  /**
+   * Aplica o foco pedido (aba/propriedade/item/modelos) uma única vez por
+   * pedido. A guarda por identidade evita reaplicar a cada render; o wrapper
+   * limpa o pedido via `onFocusApplied` logo depois.
+   */
+  const appliedFocusRef = useRef<DatabaseFocusRequest | null>(null);
+  useEffect(() => {
+    if (!focusRequest || appliedFocusRef.current === focusRequest) return;
+    appliedFocusRef.current = focusRequest;
+    const { viewId: focusViewId, editColumnId, rowId, openTemplates } =
+      focusRequest;
+
+    // A aba vem primeiro: o editor da propriedade e a página do item dependem
+    // do que está visível na tabela.
+    if (focusViewId && views.some((v) => v.id === focusViewId)) {
+      setActiveViewId(focusViewId);
+    }
+    if (openTemplates) setIsTemplateDialogOpen(true);
+    if (rowId) setOpenRowPage(rowId);
+
+    if (editColumnId && columns.some((c) => c.id === editColumnId)) {
+      const column = columns.find((c) => c.id === editColumnId);
+      // Reexibe a propriedade oculta (o editor é medido a partir do `<th>`).
+      if (column?.hidden) {
+        setColumns((prev) =>
+          prev.map((c) => (c.id === editColumnId ? { ...c, hidden: false } : c)),
+        );
+      }
+      // Mede a posição só depois de o cabeçalho refletir o novo estado.
+      let attempts = 0;
+      const focusColumn = () => {
+        const cell = tableHeadRef.current?.querySelector<HTMLTableCellElement>(
+          `[data-column-cell="${editColumnId}"]`,
+        );
+        if (!cell && attempts < 5) {
+          attempts += 1;
+          requestAnimationFrame(focusColumn);
+          return;
+        }
+        cell?.scrollIntoView({ block: "nearest", inline: "nearest" });
+        setOpenColumnEditor(editColumnId);
+      };
+      requestAnimationFrame(focusColumn);
+    }
+    onFocusApplied?.();
+  }, [focusRequest, views, columns, setColumns, onFocusApplied]);
+
   // --- Filtros por visualização -------------------------------------------
   // Cada visualização tem seus próprios filtros (independentes das demais).
   const activeViewRecord = views.find((v) => v.id === activeViewId);
@@ -1161,6 +1538,19 @@ function DatabaseTable({
     [columns],
   );
 
+  /**
+   * Ordem renderizada das colunas visíveis: durante o arraste de uma
+   * propriedade vale a **pré-visualização** (`columnDragOrder`), para as demais
+   * "escorregarem" para o lado em tempo real; fora do arraste, a ordem real.
+   */
+  const orderedVisibleColumns = columnDragOrder ?? visibleColumns;
+
+  /**
+   * Id da 1ª coluna visível na ordem **real** (não muda durante o arraste) —
+   * define qual célula mostra o botão de abrir a página do item.
+   */
+  const firstVisibleId = visibleColumns[0]?.id ?? null;
+
   // --- Paginação por cursor das linhas (visão Tabela) --------------------
   /** Busca "debounced" (250ms): o filtro de texto é aplicado no servidor. */
   const [debouncedQuery, setDebouncedQuery] = useState(query);
@@ -1168,6 +1558,11 @@ function DatabaseTable({
     const timer = setTimeout(() => setDebouncedQuery(query), 250);
     return () => clearTimeout(timer);
   }, [query]);
+
+  // Foca o campo assim que a busca é expandida pelo ícone de lupa.
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
 
   /** Filtros por propriedade traduzidos para o servidor. */
   const serverFilters = useMemo<RowsFilter[]>(() => {
@@ -1213,6 +1608,15 @@ function DatabaseTable({
     filters: serverFilters,
     limit: ROWS_PAGE_SIZE,
   });
+
+  /** Linha em arraste (conteúdo do overlay do dnd-kit). */
+  const draggingRow = useMemo(
+    () =>
+      draggingRowId
+        ? (tableRows.find((r) => r.id === draggingRowId) ?? null)
+        : null,
+    [tableRows, draggingRowId],
+  );
 
   // --- Relação (vínculos) e Rollup (calculado) ----------------------------
   /** Colunas de rollup configuradas. */
@@ -1398,6 +1802,13 @@ function DatabaseTable({
 
   /** Nº de colunas do `<tbody>` (gutter + visíveis + ações + fantasma). */
   const tableColumnCount = visibleColumns.length + 3;
+
+  /** Largura total da tabela (gutter + visíveis + ações + coluna fantasma). */
+  const tableWidth =
+    ROW_GUTTER_WIDTH +
+    visibleColumns.reduce((sum, c) => sum + columnWidth(c), 0) +
+    ACTIONS_COLUMN_WIDTH +
+    tableSpacerWidth;
 
   // Mede a altura do cabeçalho sticky (offset do início da lista no scroll).
   useLayoutEffect(() => {
@@ -1892,6 +2303,24 @@ function DatabaseTable({
       });
       return nextRows;
     });
+  }
+
+  /**
+   * Grava a ordem das **propriedades** ao soltar o arraste (a pré-visualização
+   * reordena só as visíveis; as ocultas mantêm a posição). A ordem é a do array
+   * `columns`, persistida em `databases.columns`.
+   */
+  function commitColumnDrag() {
+    const preview = columnDragOrder;
+    setDraggingColumnId(null);
+    setColumnDragOrder(null);
+    setDraggingColumnBox(null);
+    if (!preview) return;
+    const visibleIds = visibleColumns.map((c) => c.id);
+    const order = preview.map((c) => c.id);
+    // Nada mudou: evita uma gravação desnecessária.
+    if (order.every((id, index) => id === visibleIds[index])) return;
+    setColumns((prev) => applyVisibleColumnOrder(prev, visibleIds, order));
   }
 
   // Foca o primeiro campo da linha recém-criada pelo botão "+" da gutter.
@@ -2712,24 +3141,15 @@ function DatabaseTable({
     return <span className="text-xs text-muted-foreground">{text}</span>;
   }
 
-
-
   return (
     <>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-lg border bg-card shadow-sm">
+      {/* Sem card: o database ocupa toda a área ao lado da sidebar (o `bg-card`
+          é mantido para a superfície combinar com o cabeçalho/rodapé sticky). */}
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-card">
         {/* Barra de título do database (estilo Notion) */}
         <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
           <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onBack}
-              aria-label="Voltar para a lista de databases"
-              title="Voltar"
-              className="flex h-[30px] w-[30px] items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <ArrowLeft className="h-4 w-4" />
-            </button>
             <div className="relative" ref={titleIconAnchorRef}>
               <button
                 type="button"
@@ -2823,20 +3243,50 @@ function DatabaseTable({
             ) : null}
           </div>
           <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={query}
-                onChange={(e) => {
-                  // Ao mudar a busca, as linhas "fixadas" voltam a ser
-                  // avaliadas pelo filtro normalmente.
-                  setPinnedRowIds(new Set());
-                  setQuery(e.target.value);
-                }}
-                placeholder="Buscar..."
-                className="w-44 pl-8"
-              />
-            </div>
+            {/* Busca recolhida: só o ícone de lupa; clicar abre (e foca) o input. */}
+            {searchOpen ? (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={searchInputRef}
+                  value={query}
+                  onChange={(e) => {
+                    // Ao mudar a busca, as linhas "fixadas" voltam a ser
+                    // avaliadas pelo filtro normalmente.
+                    setPinnedRowIds(new Set());
+                    setQuery(e.target.value);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape") return;
+                    // Esc: limpa a busca; sem texto, recolhe de volta à lupa.
+                    if (query) {
+                      setPinnedRowIds(new Set());
+                      setQuery("");
+                    } else {
+                      setSearchOpen(false);
+                    }
+                  }}
+                  onBlur={() => {
+                    // Recolhe ao sair do campo, mas só sem texto (não esconde
+                    // uma busca ativa).
+                    if (!query.trim()) setSearchOpen(false);
+                  }}
+                  placeholder="Buscar..."
+                  aria-label="Buscar na tabela"
+                  className="w-44 pl-8"
+                />
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="icon"
+                onClick={() => setSearchOpen(true)}
+                aria-label="Buscar na tabela"
+                title="Buscar"
+              >
+                <Search className="h-4 w-4" />
+              </Button>
+            )}
             <div className="relative" ref={filterAnchorRef}>
               <Button
                 variant="outline"
@@ -3667,8 +4117,20 @@ function DatabaseTable({
         {/* Área rolável: tabela */}
         <div ref={tableScrollRef} className="min-h-0 flex-1 overflow-auto">
         {/* Tabela */}
+        {/* Coluna flex com altura mínima da área visível: a tabela cresce e o
+            rodapé "Calcular" fica colado na base, acima da barra de rolagem
+            horizontal, mesmo quando há poucas linhas. */}
         {activeView.type === "table" ? (
-        <div className="min-h-0">
+        <div className="flex min-h-full flex-col">
+          <DndContext
+            sensors={sensors}
+            modifiers={[dragAxisModifier]}
+            onDragStart={handleDragStart}
+            onDragMove={handleDragMove}
+            onDragEnd={handleDragEnd}
+            onDragCancel={handleDragCancel}
+          >
+          <div className="flex-1">
           <table
             data-database-table
             className="w-max table-fixed border-collapse text-sm"
@@ -3679,16 +4141,12 @@ function DatabaseTable({
                  calculada por `tableSpacerWidth`), e não min-width/100%, para que
                  `table-fixed` NÃO redistribua as larguras das colunas: cada uma
                  mantém o seu tamanho e a fantasma absorve o resto da tela. */
-              width:
-                ROW_GUTTER_WIDTH +
-                visibleColumns.reduce((sum, c) => sum + columnWidth(c), 0) +
-                ACTIONS_COLUMN_WIDTH +
-                tableSpacerWidth,
+              width: tableWidth,
             }}
           >
             <colgroup>
               <col style={{ width: ROW_GUTTER_WIDTH }} />
-              {visibleColumns.map((column) => (
+              {orderedVisibleColumns.map((column) => (
                 <col
                   key={column.id}
                   style={{
@@ -3728,13 +4186,15 @@ function DatabaseTable({
                     ) : null}
                   </div>
                 </th>
-                {visibleColumns.map((column) => {
+                {orderedVisibleColumns.map((column) => {
                   const Icon = columnIcon(column);
                   return (
-                    <th
+                    <ColumnHeaderCell
                       key={column.id}
-                      ref={openColumnEditor === column.id ? columnHeaderRef : undefined}
-                      className="relative border-b px-3 py-2 font-medium"
+                      columnId={column.id}
+                      isAnchor={openColumnEditor === column.id}
+                      anchorRef={columnHeaderRef}
+                      className="relative border-b px-3 py-2 font-medium transition-colors hover:bg-accent"
                     >
                       <button
                         type="button"
@@ -3746,17 +4206,31 @@ function DatabaseTable({
                           setOpenHeaderTypeMenu(null);
                           setOpenIconPicker(null);
                         }}
-                        className="flex w-full items-center gap-1.5 overflow-hidden rounded px-1 py-0.5 text-left"
-                        title="Editar propriedade"
+                        className={cn(
+                          // Cursor padrão (a mãozinha comum, igual às abas de
+                          // visualização) — o arraste continua funcionando.
+                          "flex w-full items-center gap-1.5 overflow-hidden rounded px-1 py-0.5 text-left",
+                          // Colunas numéricas: título alinhado à direita (como as células).
+                          column.type === "number" && "justify-end",
+                        )}
+                        title="Editar propriedade (arraste para reordenar)"
                       >
                         <Icon className="h-3.5 w-3.5 shrink-0" />
                         <span className="min-w-0 truncate">{column.name}</span>
-                        <ChevronDown className="ml-auto h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
+                        <ChevronDown
+                          className={cn(
+                            "h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100",
+                            column.type !== "number" && "ml-auto",
+                          )}
+                        />
                       </button>
 
                       {openColumnEditor === column.id && columnEditorPos ? (
                         <div
                           data-column-editor
+                          // Não deixa o dnd-kit capturar interações do popover
+                          // (clicar/rolar as opções não pode virar arraste).
+                          onPointerDown={(event) => event.stopPropagation()}
                           className={cn(
                             "fixed z-30 rounded-md border bg-popover p-3 text-left font-normal text-foreground shadow-md",
                             column.type === "status" ? "w-72" : "w-64",
@@ -4375,7 +4849,12 @@ function DatabaseTable({
                         role="separator"
                         aria-label={`Redimensionar coluna ${column.name}`}
                         aria-orientation="vertical"
-                        onPointerDown={(e) => startColumnResize(e, column)}
+                        onPointerDown={(e) => {
+                          // Não deixa o dnd-kit iniciar um arraste junto com o
+                          // redimensionamento da coluna.
+                          e.stopPropagation();
+                          startColumnResize(e, column);
+                        }}
                         onDoubleClick={() =>
                           setColumns((prev) =>
                             prev.map((c) =>
@@ -4393,11 +4872,11 @@ function DatabaseTable({
                             : "hover:bg-primary/30",
                         )}
                       />
-                    </th>
+                    </ColumnHeaderCell>
                   );
                 })}
 
-                {/* Botão para adicionar nova propriedade/coluna */}
+                {/* Botão para adicionar nova propriedade/coluna. */}
                 <th className="sticky right-0 z-20 border-b bg-card px-2 py-2">
                   <button
                     type="button"
@@ -4443,39 +4922,14 @@ function DatabaseTable({
                   );
                 }
                 return (
-                <tr
+                <DropRow
                   key={row.id}
-                  data-row-id={row.id}
+                  rowId={row.id}
+                  dropBefore={draggingRowId !== null && rowDropBeforeId === row.id}
                   className={cn(
                     "group border-b transition-colors hover:bg-accent/40",
                     selectedRowIds.has(row.id) && "bg-primary/5",
                   )}
-                  data-drop-before={
-                    draggingRowId && rowDropBeforeId === row.id ? "" : undefined
-                  }
-                  onDragOver={(event) => {
-                    if (!draggingRowId) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = "move";
-                    const rect = event.currentTarget.getBoundingClientRect();
-                    const after = event.clientY - rect.top > rect.height / 2;
-                    const idx = filtered.findIndex((r) => r.id === row.id);
-                    const nextBefore = after
-                      ? (filtered[idx + 1]?.id ?? null)
-                      : row.id;
-                    setRowDropBeforeId((cur) =>
-                      cur === nextBefore ? cur : nextBefore,
-                    );
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const draggedId =
-                      event.dataTransfer.getData("text/plain") || draggingRowId;
-                    const beforeId = rowDropBeforeId;
-                    setDraggingRowId(null);
-                    setRowDropBeforeId(null);
-                    if (draggedId) moveRow(draggedId, beforeId);
-                  }}
                 >
                   {/* Coluna gutter: controles da linha agrupados (adicionar abaixo,
                       arrastar, selecionar). Aparecem ao passar o mouse na linha. */}
@@ -4492,24 +4946,7 @@ function DatabaseTable({
                       >
                         <Plus className="h-3.5 w-3.5" />
                       </button>
-                      <button
-                        type="button"
-                        draggable
-                        onDragStart={(event) => {
-                          event.dataTransfer.setData("text/plain", row.id);
-                          event.dataTransfer.effectAllowed = "move";
-                          setDraggingRowId(row.id);
-                        }}
-                        onDragEnd={() => {
-                          setDraggingRowId(null);
-                          setRowDropBeforeId(null);
-                        }}
-                        aria-label="Arrastar linha para reordenar"
-                        title="Arrastar para reordenar"
-                        className="flex h-6 w-6 flex-none cursor-grab items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-foreground active:cursor-grabbing focus-visible:opacity-100 group-hover:opacity-100"
-                      >
-                        <GripVertical className="h-3.5 w-3.5" />
-                      </button>
+                      <RowDragHandle rowId={row.id} />
                       <input
                         type="checkbox"
                         checked={selectedRowIds.has(row.id)}
@@ -4522,9 +4959,9 @@ function DatabaseTable({
                       />
                     </div>
                   </td>
-                  {visibleColumns.map((column, index) => (
+                  {orderedVisibleColumns.map((column) => (
                     <Fragment key={column.id}>
-                      {renderCell(row, column, index === 0)}
+                      {renderCell(row, column, column.id === firstVisibleId)}
                     </Fragment>
                   ))}
 
@@ -4543,7 +4980,7 @@ function DatabaseTable({
                   {/* Célula fantasma: alinha com a coluna espacer para o `border-b`
                       da linha se estender até o fim da tela. */}
                   <td aria-hidden />
-                </tr>
+                </DropRow>
                 );
               })}
 
@@ -4556,34 +4993,71 @@ function DatabaseTable({
               ) : null}
 
             </tbody>
-
-            {/* Rodapé "Calcular" (estilo Notion): linha sticky no fim da tabela
-                com o agregado de cada coluna numérica configurada. Só aparece
-                quando há ao menos uma coluna com `calculate`. Emite o mesmo
-                número de células do `colgroup` (gutter + visíveis + ações +
-                fantasma) para não desalinhar a grade. */}
-            {calcColumns.length > 0 ? (
-              <tfoot className="sticky bottom-0 z-10 bg-card">
-                <tr className="text-xs">
-                  <td className="border-t px-3 py-2" />
-                  {visibleColumns.map((column) => (
-                    <td
-                      key={column.id}
-                      className="border-t px-3 py-2 font-medium text-foreground"
-                    >
-                      <span className="block truncate whitespace-nowrap">
-                        {column.calculate
-                          ? formatCalcValue(getColumnAggregate(column.id), column)
-                          : ""}
-                      </span>
-                    </td>
-                  ))}
-                  <td className="border-t" aria-hidden />
-                  <td className="border-t" aria-hidden />
-                </tr>
-              </tfoot>
-            ) : null}
           </table>
+          </div>
+
+          {/* Rodapé "Calcular" (estilo Notion): agregado de cada coluna numérica
+              configurada, fixo na base da área rolável (acima da barra de rolagem
+              horizontal). Emite as mesmas larguras do `colgroup` (gutter +
+              visíveis + ações + fantasma) para não desalinhar a grade. */}
+          {calcColumns.length > 0 ? (
+            <div
+              className="sticky bottom-0 z-10 flex flex-none border-t bg-card"
+              style={{ width: tableWidth }}
+            >
+              <div className="py-2" style={{ width: ROW_GUTTER_WIDTH }} />
+              {orderedVisibleColumns.map((column) => (
+                <div
+                  key={column.id}
+                  className={cn(
+                    "px-3 py-2 text-xs font-medium text-foreground",
+                    // Agregado de coluna numérica: alinhado à direita.
+                    column.type === "number" && "text-right",
+                  )}
+                  style={{ width: columnWidth(column) }}
+                >
+                  <span className="block truncate whitespace-nowrap">
+                    {column.calculate
+                      ? formatCalcValue(getColumnAggregate(column.id), column)
+                      : ""}
+                  </span>
+                </div>
+              ))}
+              <div className="py-2" style={{ width: ACTIONS_COLUMN_WIDTH }} />
+              <div className="py-2" style={{ width: tableSpacerWidth }} />
+            </div>
+          ) : null}
+
+          {/* Prévia que segue o cursor (dnd-kit): o cabeçalho da propriedade
+              arrastada ou um cartão com o título da linha arrastada. */}
+          <DragOverlay dropAnimation={null}>
+            {draggingColumn ? (
+              // Mesmo visual do cabeçalho em hover, ocupando **toda a largura**
+              // da coluna (a célula inteira) e seguindo o cursor.
+              <div
+                className={cn(
+                  "flex items-center gap-1.5 border bg-accent px-3 py-2 text-xs font-medium text-foreground shadow-lg",
+                  draggingColumn.type === "number" && "justify-end",
+                )}
+                style={{
+                  width: draggingColumnBox?.width ?? columnWidth(draggingColumn),
+                  height: draggingColumnBox?.height,
+                }}
+              >
+                {DraggingColumnIcon ? (
+                  <DraggingColumnIcon className="h-3.5 w-3.5 shrink-0" />
+                ) : null}
+                <span className="min-w-0 truncate">{draggingColumn.name}</span>
+              </div>
+            ) : draggingRow ? (
+              <div className="flex items-center gap-2 rounded-md border bg-popover px-3 py-1.5 text-xs shadow-lg">
+                <span className="max-w-[16rem] truncate">
+                  {rowTitleOf(draggingRow, columns)}
+                </span>
+              </div>
+            ) : null}
+          </DragOverlay>
+          </DndContext>
         </div>
         ) : activeView.type === "kanban" ? (
         <KanbanBoard
@@ -4610,23 +5084,6 @@ function DatabaseTable({
         />
         )}
         </div>
-        {/* Nova linha: fica FORA da área rolável (rodapé fixo do card) para não
-            se deslocar quando linhas são adicionadas — assim o botão continua
-            clicável no mesmo ponto. `onMouseDown` evita que o clique roube o foco
-            (ex.: mantém o foco no campo de busca). */}
-        {activeView.type === "table" ? (
-          <button
-            type="button"
-            onMouseDown={(e) => e.preventDefault()}
-            onClick={() => {
-              void addRow();
-            }}
-            className="flex w-full flex-none items-center gap-2 border-t px-3 py-2 text-sm text-muted-foreground hover:bg-accent/40"
-          >
-            <Plus className="h-4 w-4" />
-            Nova linha
-          </button>
-        ) : null}
         </div>
       </div>
 
@@ -4745,7 +5202,7 @@ function DatabaseTable({
  * otimistas: o estado local é atualizado na hora e a escrita roda em background,
  * com refetch para reverter em caso de erro.
  */
-export function DatabaseView() {
+export function DatabaseView({ userName }: { userName?: string }) {
   const [databases, setDatabases] = useState<DatabaseModel[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   /** Categorias de projetos do usuário (compartilhadas e ordenadas por `position`). */
@@ -4753,6 +5210,29 @@ export function DatabaseView() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Flag: a navegação salva entre databases abertos (chips + database ativo) já
+   * foi restaurada. Enquanto `false`, o auto-open do primeiro database fica
+   * bloqueado para não sobrepor o estado salvo.
+   */
+  const [restoredOpenDatabases, setRestoredOpenDatabases] = useState(false);
+  /**
+   * Navegação entre databases abertos carregada do servidor (tabela
+   * `workspace_open_databases`). É restaurada assim que a lista de databases
+   * carrega, para não abrir outro database no lugar do salvo.
+   */
+  const [persistedOpenDatabases, setPersistedOpenDatabases] =
+    useState<OpenDatabasesState>(EMPTY_OPEN_DATABASES);
+  /**
+   * O usuário fechou a última aba: impede o auto-open de reabrir um database
+   * logo em seguida (volta a valer ao abrir um database ou trocar de projeto).
+   */
+  const closedAllTabsRef = useRef(false);
+  /**
+   * Última navegação conhecida pelo servidor (restaurada ou salva). Evita
+   * reescrever no banco um estado que já está lá.
+   */
+  const lastSavedOpenDatabasesRef = useRef<string | null>(null);
 
   // Projeto ativo no Workspace. `null` = tela de projetos; id = databases do projeto.
   const activeProjectId = useCalendarStore((s) => s.activeProjectId);
@@ -4761,6 +5241,14 @@ export function DatabaseView() {
   // (ex.: "Adicionar database" com criação ou abertura de um existente).
   const pendingDatabaseRequest = useCalendarStore((s) => s.pendingDatabaseRequest);
   const consumeDatabaseRequest = useCalendarStore((s) => s.consumeDatabaseRequest);
+  const requestOpenDatabase = useCalendarStore((s) => s.requestOpenDatabase);
+  /**
+   * Foco pendente a aplicar na Tabela após abrir um database pela paleta de
+   * busca global (aba/propriedade/item/modelos). Limpo depois de aplicado.
+   */
+  const [focusRequest, setFocusRequest] = useState<DatabaseFocusRequest | null>(
+    null,
+  );
   // Mantém a lista fixada na sidebar do calendário sincronizada com delete/rename.
   // Um database só entra na sidebar se for adicionado pelo botão "Adicionar
   // database" (na própria sidebar) — criar pela tela de database NÃO o fixa.
@@ -4811,12 +5299,38 @@ export function DatabaseView() {
     if (first) setActiveProjectId(first.id);
   }, [resolvedProjectId, projects, setActiveProjectId]);
 
-  // Databases visíveis na tela atual: quando há um projeto ativo, mostra apenas
-  // os databases daquele projeto.
+  /** Databases do projeto ativo, na ordem de criação. */
   const projectDatabases = useMemo(
     () => databases.filter((d) => d.projectId === resolvedProjectId),
     [databases, resolvedProjectId],
   );
+
+  // Trocar de projeto volta a permitir o auto-open (mesmo depois de o usuário
+  // fechar a última aba do projeto anterior).
+  useEffect(() => {
+    closedAllTabsRef.current = false;
+  }, [resolvedProjectId]);
+
+  /*
+   * Com um projeto ativo e nenhum database aberto, abre automaticamente o
+   * primeiro database do projeto. Assim o Workspace não fica parado no cartão
+   * de "criar database" quando o projeto já tem databases — o cartão só aparece
+   * para projeto **sem nenhum** database. Só roda depois de restaurar a
+   * navegação salva (para não abrir outro database no lugar do salvo) e não
+   * reabre quando o usuário acabou de fechar a última aba.
+   */
+  useEffect(() => {
+    if (
+      !restoredOpenDatabases ||
+      selectedId ||
+      !resolvedProjectId ||
+      closedAllTabsRef.current
+    ) {
+      return;
+    }
+    const first = databases.find((d) => d.projectId === resolvedProjectId);
+    if (first) setSelectedId(first.id);
+  }, [restoredOpenDatabases, selectedId, resolvedProjectId, databases]);
 
   // Resumo dos projetos para a tela de projetos, com a contagem de databases.
   const projectSummaries = useMemo(
@@ -4829,6 +5343,92 @@ export function DatabaseView() {
         databaseCount: databases.filter((d) => d.projectId === p.id).length,
       })),
     [projects, databases],
+  );
+
+  /**
+   * Databases abertos como **abas** na faixa, em ordem fixa (nunca se
+   * reordenam). O database aberto entra automaticamente ao final quando não
+   * estiver na lista.
+   */
+  const [openDatabaseIds, setOpenDatabaseIds] = useState<string[]>([]);
+
+  // Mantém o database aberto na lista de abas (acrescentado ao final, para as
+  // abas existentes nunca mudarem de posição).
+  useEffect(() => {
+    if (!selectedId) return;
+    // Abrir um database volta a permitir o auto-open (caso o usuário tenha
+    // fechado todas as abas antes).
+    closedAllTabsRef.current = false;
+    setOpenDatabaseIds((prev) =>
+      prev.includes(selectedId) ? prev : [...prev, selectedId],
+    );
+  }, [selectedId]);
+
+  // Restaura a navegação salva (chips + database aberto) assim que a lista
+  // carrega. Um pedido pendente da sidebar do calendário tem prioridade.
+  useEffect(() => {
+    if (loading || restoredOpenDatabases) return;
+    setRestoredOpenDatabases(true);
+    if (pendingDatabaseRequest) return;
+    const known = new Set(databases.map((d) => d.id));
+    const ids = persistedOpenDatabases.ids.filter((id) => known.has(id));
+    const savedSelectedId =
+      persistedOpenDatabases.selectedId &&
+      known.has(persistedOpenDatabases.selectedId)
+        ? persistedOpenDatabases.selectedId
+        : null;
+    if (ids.length > 0) setOpenDatabaseIds(ids);
+    if (savedSelectedId) setSelectedId(savedSelectedId);
+    // O que foi restaurado já está no servidor: não reescreve ao abrir.
+    lastSavedOpenDatabasesRef.current = JSON.stringify({
+      ids,
+      selectedId: savedSelectedId,
+    });
+  }, [
+    loading,
+    restoredOpenDatabases,
+    pendingDatabaseRequest,
+    databases,
+    persistedOpenDatabases,
+  ]);
+
+  // Persiste a navegação no servidor (com debounce). Só roda depois de
+  // restaurada, para não sobrescrever o que estava salvo com o estado inicial.
+  useEffect(() => {
+    if (!restoredOpenDatabases) return;
+    const payload = { ids: openDatabaseIds, selectedId };
+    const key = JSON.stringify(payload);
+    if (key === lastSavedOpenDatabasesRef.current) return;
+    const timer = setTimeout(() => {
+      lastSavedOpenDatabasesRef.current = key;
+      void saveOpenDatabases(payload).catch((err) => {
+        setError((err as Error).message || "Falha ao salvar a navegação");
+      });
+    }, OPEN_DATABASES_SAVE_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [restoredOpenDatabases, openDatabaseIds, selectedId]);
+
+  /** Acrescenta um database como aba (escolhido no seletor do "+"). */
+  const handleSelectDatabaseChip = useCallback((id: string) => {
+    setOpenDatabaseIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+
+  /**
+   * Fecha a aba de um database (não o exclui). Se era a aba ativa, abre a
+   * vizinha (à direita; sem ela, a da esquerda). Fechar a última aba deixa o
+   * Workspace sem database aberto, sem reabrir um automaticamente.
+   */
+  const handleCloseDatabase = useCallback(
+    (id: string) => {
+      const index = openDatabaseIds.indexOf(id);
+      const next = openDatabaseIds.filter((openId) => openId !== id);
+      setOpenDatabaseIds(next);
+      if (next.length === 0) closedAllTabsRef.current = true;
+      setSelectedId((current) =>
+        current === id ? next[index] ?? next[index - 1] ?? null : current,
+      );
+    },
+    [openDatabaseIds],
   );
 
   // Espelho sempre atualizado da lista de databases. Usado para ler os valores
@@ -4873,40 +5473,40 @@ export function DatabaseView() {
     }
   }, []);
 
-  /** Contagem de linhas por database (uma consulta agrupada no servidor). */
-  const [rowCounts, setRowCounts] = useState<Map<string, number>>(new Map());
-  const refreshRowCounts = useCallback(async () => {
-    try {
-      setRowCounts(await countDatabaseRows());
-    } catch {
-      /* a contagem é informativa — uma falha aqui não deve quebrar a tela */
-    }
-  }, []);
-
   useEffect(() => {
     let cancelled = false;
     (async () => {
       setLoading(true);
       try {
-        const [data, projectList, categoryList] = await Promise.all([
+        const [data, projectList, categoryList, openState] = await Promise.all([
           fetchDatabases(),
           fetchProjects(),
           fetchProjectCategories(),
+          // Conveniência de UI: uma falha aqui não deve derrubar o carregamento.
+          fetchOpenDatabases().catch(() => EMPTY_OPEN_DATABASES),
         ]);
         if (cancelled) return;
-        // Gera automaticamente os itens recorrentes que "venceram" (idempotente),
-        // garantindo que o database mostre os itens mesmo sem abrir o calendário.
-        const generated = await runAutoTemplates(data);
-        if (cancelled) return;
-        const merged = data.map((db) => {
-          const change = generated.find((g) => g.databaseId === db.id);
-          return change ? change.database : db;
-        });
-        setDatabases(merged);
+        setDatabases(data);
         setProjects(projectList);
         setCategories(categoryList);
+        setPersistedOpenDatabases(openState);
         setError(null);
-        void refreshRowCounts();
+        // Libera a tela assim que os dados básicos chegam. A geração automática
+        // dos itens recorrentes que "venceram" (idempotente) roda em seguida,
+        // **sem bloquear** o carregamento: ela faz uma requisição por ocorrência
+        // devida (uma por item), o que pode demorar bastante e antes prendia a
+        // tela em "Carregando databases...".
+        setLoading(false);
+        const generated = await runAutoTemplates(data);
+        if (cancelled || generated.length === 0) return;
+        // Aplica os databases alterados sobre o estado **atual** (e não sobre
+        // `data`), para não descartar mudanças feitas enquanto gerava.
+        setDatabases((prev) =>
+          prev.map((db) => {
+            const change = generated.find((g) => g.databaseId === db.id);
+            return change ? change.database : db;
+          }),
+        );
       } catch (err) {
         if (!cancelled) {
           setError((err as Error).message || "Falha ao carregar databases");
@@ -4918,7 +5518,7 @@ export function DatabaseView() {
     return () => {
       cancelled = true;
     };
-  }, [refreshRowCounts]);
+  }, []);
 
   /**
    * Executa uma escrita em background. Em erro, mostra a mensagem e aplica o
@@ -5004,6 +5604,19 @@ export function DatabaseView() {
     [activeProjectId, addSidebarDatabase, setActiveProjectId],
   );
 
+  /**
+   * Cria um database **no projeto informado** (popover de databases do projeto
+   * na sidebar): ativa o projeto e delega ao fluxo de criação existente, que já
+   * abre o database criado. Não fixa na sidebar do calendário.
+   */
+  const handleCreateDatabase = useCallback(
+    (projectId: string, input: NewDatabaseInput) => {
+      setActiveProjectId(projectId);
+      void handleCreate(input, false, projectId);
+    },
+    [handleCreate, setActiveProjectId],
+  );
+
   // Atende o pedido disparado pela sidebar do calendário assim que a tela de
   // database estiver pronta (lista inicial carregada): cria um novo database ou
   // abre um existente, e limpa o pedido (evita repetir a cada render).
@@ -5019,6 +5632,14 @@ export function DatabaseView() {
       const target = databases.find((d) => d.id === pendingDatabaseRequest.id);
       if (target) setActiveProjectId(target.projectId);
       setSelectedId(pendingDatabaseRequest.id);
+      // A paleta de busca pode pedir foco (aba/propriedade/item/modelos).
+      const { viewId, editColumnId, rowId, openTemplates } =
+        pendingDatabaseRequest;
+      setFocusRequest(
+        viewId || editColumnId || rowId || openTemplates
+          ? { viewId, editColumnId, rowId, openTemplates }
+          : null,
+      );
     }
   }, [
     pendingDatabaseRequest,
@@ -5046,10 +5667,17 @@ export function DatabaseView() {
       );
       setSelectedId((current) => (current === id ? null : current));
       removeSidebarDatabase(id);
-      // Remove da sidebar as visões vinculadas que também saíram.
+      // Remove da sidebar e da navegação (chips) as visões vinculadas que saíram.
+      const removedIds = new Set<string>([id]);
       for (const d of databasesRef.current) {
-        if (d.linkedDatabaseId === id) removeSidebarDatabase(d.id);
+        if (d.linkedDatabaseId === id) {
+          removedIds.add(d.id);
+          removeSidebarDatabase(d.id);
+        }
       }
+      setOpenDatabaseIds((prev) =>
+        prev.filter((openId) => !removedIds.has(openId)),
+      );
       invalidateRelationLinks();
       invalidateRollupValues();
       persist(async () => {
@@ -5066,10 +5694,55 @@ export function DatabaseView() {
   /** Abre um projeto: passa a exibir os databases daquele projeto. */
   const handleOpenProject = useCallback(
     (id: string) => {
+      // Limpa a seleção para que o primeiro database do projeto seja aberto
+      // automaticamente (quando houver algum).
       setSelectedId(null);
       setActiveProjectId(id);
     },
     [setActiveProjectId],
+  );
+
+  /**
+   * Abre um resultado da paleta de busca global. Projetos navegam direto;
+   * databases/propriedades/abas/modelos/itens abrem o database com o foco
+   * correspondente (categorias são resolvidas na própria sidebar).
+   */
+  const handleSearchResult = useCallback(
+    (result: WorkspaceSearchResult) => {
+      switch (result.kind) {
+        case "project":
+          setSelectedId(null);
+          setActiveProjectId(result.projectId);
+          return;
+        case "category":
+          // Tratada na sidebar (expande o grupo); não deveria chegar aqui.
+          return;
+        case "database":
+          requestOpenDatabase(result.databaseId, result.projectId);
+          return;
+        case "column":
+          requestOpenDatabase(result.databaseId, result.projectId, {
+            editColumnId: result.columnId,
+          });
+          return;
+        case "view":
+          requestOpenDatabase(result.databaseId, result.projectId, {
+            viewId: result.viewId,
+          });
+          return;
+        case "template":
+          requestOpenDatabase(result.databaseId, result.projectId, {
+            openTemplates: true,
+          });
+          return;
+        case "item":
+          requestOpenDatabase(result.databaseId, result.projectId, {
+            rowId: result.rowId,
+          });
+          return;
+      }
+    },
+    [requestOpenDatabase, setActiveProjectId],
   );
 
   /**
@@ -5480,7 +6153,6 @@ export function DatabaseView() {
     [patchDatabase, persist],
   );
 
-  const handleBack = useCallback(() => setSelectedId(null), []);
   /**
    * Abre outro database pelo id (link "database relacionado"). Ativa o projeto
    * do database alvo para manter a sidebar em sincronia quando ele pertence a
@@ -5536,9 +6208,10 @@ export function DatabaseView() {
   }
 
   /*
-   * Sem projeto ativo (instante inicial, antes da auto-seleção do primeiro
-   * projeto): mostra apenas a sidebar. O efeito acima seleciona o primeiro
-   * projeto e a tela passa a listar os databases dele.
+   * Sem projeto ativo: quando há projetos, o efeito acima seleciona o primeiro e
+   * a tela passa a listar os databases dele. Quando NÃO há nenhum projeto (conta
+   * nova), a área principal antes ficava em branco — agora mostra o cartão de
+   * boas-vindas com as ações de criação.
    */
   if (!resolvedProjectId) {
     return (
@@ -5546,8 +6219,12 @@ export function DatabaseView() {
         <ProjectsSidebar
           projects={projectSummaries}
           categories={categories}
+          databases={databases}
           activeProjectId={resolvedProjectId}
           onOpenProject={handleOpenProject}
+          onOpenSearchResult={handleSearchResult}
+          onCreateDatabase={handleCreateDatabase}
+          onDeleteDatabase={handleDelete}
           onCreateProject={handleCreateProject}
           onCreateCategory={handleCreateCategory}
           onReorderCategories={handleReorderCategories}
@@ -5556,20 +6233,39 @@ export function DatabaseView() {
           onUpdateCategory={handleUpdateCategory}
           onDeleteCategory={handleDeleteCategory}
           onDeleteProject={handleDeleteProject}
+        />
+        <WorkspaceEmptyState
+          variant="no-projects"
+          userName={userName}
+          categories={categories}
+          databases={databases}
+          onCreateProject={handleCreateProject}
+          onCreateCategory={handleCreateCategory}
+          onCreateDatabase={(input) => void handleCreate(input)}
         />
       </div>
     );
   }
 
-  // Com projeto ativo e nenhum database selecionado: lista os databases do projeto.
+  // Com projeto ativo e nenhum database selecionado: a sidebar continua à
+  // esquerda (a lista de databases vive no popover do projeto). O cartão de
+  // criação só aparece quando o projeto **não tem nenhum** database; havendo
+  // databases, o primeiro é aberto automaticamente (efeito acima) — este ramo
+  // só é alcançado se o database aberto for excluído, mostrando a dica de
+  // escolha.
   if (!selected) {
+    const projectHasDatabases = projectDatabases.length > 0;
     return (
       <div className="flex min-h-0 flex-1 overflow-hidden">
         <ProjectsSidebar
           projects={projectSummaries}
           categories={categories}
+          databases={databases}
           activeProjectId={resolvedProjectId}
           onOpenProject={handleOpenProject}
+          onOpenSearchResult={handleSearchResult}
+          onCreateDatabase={handleCreateDatabase}
+          onDeleteDatabase={handleDelete}
           onCreateProject={handleCreateProject}
           onCreateCategory={handleCreateCategory}
           onReorderCategories={handleReorderCategories}
@@ -5579,25 +6275,22 @@ export function DatabaseView() {
           onDeleteCategory={handleDeleteCategory}
           onDeleteProject={handleDeleteProject}
         />
-        <DatabasesScreen
-          databases={projectDatabases.map((d) => {
-            // Numa visão vinculada, contagem e colunas vêm da origem.
-            const source = d.linkedDatabaseId
-              ? databases.find((s) => s.id === d.linkedDatabaseId)
-              : null;
-            return {
-              id: d.id,
-              name: d.name,
-              icon: d.icon,
-              linkedDatabaseId: d.linkedDatabaseId ?? null,
-              rowCount: rowCounts.get(d.linkedDatabaseId ?? d.id) ?? 0,
-              columnCount: source?.columns.length ?? d.columns.length,
-            };
-          })}
-          onOpen={setSelectedId}
-          onCreate={(input) => void handleCreate(input)}
-          onDelete={handleDelete}
-        />
+        {projectHasDatabases ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
+            Escolha um database na barra lateral para abri-lo.
+          </div>
+        ) : (
+          <WorkspaceEmptyState
+            variant="no-database"
+            userName={userName}
+            projectName={projects.find((p) => p.id === resolvedProjectId)?.name}
+            categories={categories}
+            databases={databases}
+            onCreateProject={handleCreateProject}
+            onCreateCategory={handleCreateCategory}
+            onCreateDatabase={(input) => void handleCreate(input)}
+          />
+        )}
         {errorNotice}
       </div>
     );
@@ -5608,8 +6301,12 @@ export function DatabaseView() {
       <ProjectsSidebar
         projects={projectSummaries}
         categories={categories}
+        databases={databases}
         activeProjectId={resolvedProjectId}
         onOpenProject={handleOpenProject}
+        onOpenSearchResult={handleSearchResult}
+        onCreateDatabase={handleCreateDatabase}
+        onDeleteDatabase={handleDelete}
         onCreateProject={handleCreateProject}
         onCreateCategory={handleCreateCategory}
         onReorderCategories={handleReorderCategories}
@@ -5619,29 +6316,41 @@ export function DatabaseView() {
         onDeleteCategory={handleDeleteCategory}
         onDeleteProject={handleDeleteProject}
       />
-      <DatabaseTable
-        key={selected.id}
-        database={tableDatabase ?? selected}
-        viewId={selected.id}
-        linkedDatabaseId={selected.linkedDatabaseId ?? null}
-        allDatabases={databases}
-        onRename={handleRename}
-        onUpdateIcon={handleUpdateIcon}
-        onUpdateColumns={handleUpdateColumns}
-        onAddRow={handleAddRow}
-        onUpdateCell={handleUpdateCell}
-        onDeleteRow={handleDeleteRow}
-        onReorderRows={handleReorderRows}
-        onRowsReordered={handleRowsReordered}
-        onAddTemplate={handleAddTemplate}
-        onDeleteTemplate={handleDeleteTemplate}
-        onApplyTemplate={handleApplyTemplate}
-        onDeleteDatabase={handleDelete}
-        onBack={handleBack}
-        onOpenDatabase={handleOpenDatabase}
-        onError={setError}
-        onPatchDatabase={patchDatabase}
-      />
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <OpenDatabaseBar
+          currentDatabaseId={selected.id}
+          databases={databases}
+          projects={projects}
+          openDatabaseIds={openDatabaseIds}
+          onSelectDatabase={handleSelectDatabaseChip}
+          onOpenDatabase={handleOpenDatabase}
+          onCloseDatabase={handleCloseDatabase}
+        />
+        <DatabaseTable
+          key={selected.id}
+          database={tableDatabase ?? selected}
+          viewId={selected.id}
+          linkedDatabaseId={selected.linkedDatabaseId ?? null}
+          allDatabases={databases}
+          onRename={handleRename}
+          onUpdateIcon={handleUpdateIcon}
+          onUpdateColumns={handleUpdateColumns}
+          onAddRow={handleAddRow}
+          onUpdateCell={handleUpdateCell}
+          onDeleteRow={handleDeleteRow}
+          onReorderRows={handleReorderRows}
+          onRowsReordered={handleRowsReordered}
+          onAddTemplate={handleAddTemplate}
+          onDeleteTemplate={handleDeleteTemplate}
+          onApplyTemplate={handleApplyTemplate}
+          onDeleteDatabase={handleDelete}
+          onOpenDatabase={handleOpenDatabase}
+          onError={setError}
+          onPatchDatabase={patchDatabase}
+          focusRequest={focusRequest}
+          onFocusApplied={() => setFocusRequest(null)}
+        />
+      </div>
       {errorNotice}
     </div>
   );

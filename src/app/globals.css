@@ -475,6 +475,7 @@
 [data-database-table] tr[data-drop-before] > td {
   box-shadow: inset 0 2px 0 hsl(var(--primary));
 }
+
 /* A borda esquerda da tabela vem do próprio container (o card tem `border`).
    Não adicionamos `border-left` no primeiro `td`, senão ele encosta na borda do
    container e a linha vertical fica com aspecto mais grosso que as demais. */
@@ -526,6 +527,12 @@
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
+}
+/* Sem as "setas" (botões de incremento/decremento) nas barras de rolagem. */
+::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
 }
 ::-webkit-scrollbar-thumb {
   background: hsl(var(--muted-foreground) / 0.35);

@@ -38,12 +38,13 @@ export function NumberCellInput({
         onBlur={() => setFocused(false)}
         aria-label={column.name}
         className={cn(
-          "w-full min-w-0 rounded bg-transparent pl-1 pr-2 py-1 outline-none focus:outline-none",
+          // Conteúdo alinhado à direita (números, estilo planilha).
+          "w-full min-w-0 rounded bg-transparent pl-2 pr-1 py-1 text-right outline-none focus:outline-none",
           showOverlay && "text-transparent caret-transparent",
         )}
       />
       {showOverlay ? (
-        <span className="pointer-events-none absolute inset-y-0 left-1 flex items-center truncate pr-2 text-foreground">
+        <span className="pointer-events-none absolute inset-y-0 left-1 right-1 flex items-center justify-end truncate pl-1 text-foreground">
           {display}
         </span>
       ) : null}

@@ -16,9 +16,20 @@ export default async function AppPage() {
     user?.email ??
     "Usuário";
 
+  // Foto do provedor (Google OAuth) — `avatar_url` (padrão do Supabase) ou
+  // `picture` (OpenID). `null` = usar o ícone padrão.
+  const avatarUrl =
+    (user?.user_metadata?.avatar_url as string | undefined) ??
+    (user?.user_metadata?.picture as string | undefined) ??
+    null;
+
   return (
     <main className="flex h-screen flex-col overflow-hidden bg-muted/30">
-      <CalendarProvider userName={displayName} userEmail={user?.email ?? ""} />
+      <CalendarProvider
+        userName={displayName}
+        userEmail={user?.email ?? ""}
+        userAvatar={avatarUrl}
+      />
     </main>
   );
 }

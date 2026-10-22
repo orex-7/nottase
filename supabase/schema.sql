@@ -350,6 +350,26 @@ as $$
   group by database_id;
 $$;
 
+-- Busca global de itens (linhas) para a paleta do Workspace: procura por
+-- substring nos valores de TODAS as linhas do usuário, reusando o índice trigram
+-- (`database_rows_search_trgm_idx`). `security invoker` → a RLS limita ao dono.
+create or replace function public.database_rows_search(
+  p_search text,
+  p_limit integer default 10
+)
+returns setof public.database_rows
+language sql
+security invoker
+stable
+as $$
+  select r.*
+  from public.database_rows r
+  where coalesce(p_search, '') <> ''
+    and public.database_row_search_text(r.values) ilike '%' || p_search || '%'
+  order by r.database_id, r.position, r.id
+  limit greatest(1, least(coalesce(p_limit, 10), 50));
+$$;
+
 -- ----------------------------------------------------------------------------
 -- Rollup (calculado): helpers puros usados por `rollup_values_for_rows`.
 -- ----------------------------------------------------------------------------
@@ -1242,6 +1262,57 @@ create trigger database_templates_set_updated_at
   for each row
   execute function public.set_updated_at();
 
+-- ----------------------------------------------------------------------------
+-- Tabela de navegação entre databases abertos (por usuário)
+-- Guarda os databases "abertos" na faixa acima da tabela (chips) e o database
+-- aberto no momento, para que a navegação acompanhe a conta em qualquer
+-- dispositivo. Uma linha por usuário (upsert por `user_id`).
+-- ----------------------------------------------------------------------------
+create table if not exists public.workspace_open_databases (
+  -- Uma linha por usuário.
+  user_id      uuid primary key references auth.users (id) on delete cascade,
+  -- Ids dos databases abertos (chips), na ordem de exibição.
+  database_ids jsonb not null default '[]'::jsonb,
+  -- Database aberto no momento (null = nenhum). Vira null se for excluído.
+  selected_id  uuid references public.databases (id) on delete set null,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+
+-- ----------------------------------------------------------------------------
+-- Row Level Security: cada usuário só acessa a própria navegação
+-- ----------------------------------------------------------------------------
+alter table public.workspace_open_databases enable row level security;
+
+drop policy if exists "Navegação é visível apenas pelo dono" on public.workspace_open_databases;
+create policy "Navegação é visível apenas pelo dono"
+  on public.workspace_open_databases for select
+  using (auth.uid() = user_id);
+
+drop policy if exists "Usuário insere sua própria navegação" on public.workspace_open_databases;
+create policy "Usuário insere sua própria navegação"
+  on public.workspace_open_databases for insert
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Usuário atualiza sua própria navegação" on public.workspace_open_databases;
+create policy "Usuário atualiza sua própria navegação"
+  on public.workspace_open_databases for update
+  using (auth.uid() = user_id)
+  with check (auth.uid() = user_id);
+
+drop policy if exists "Usuário remove sua própria navegação" on public.workspace_open_databases;
+create policy "Usuário remove sua própria navegação"
+  on public.workspace_open_databases for delete
+  using (auth.uid() = user_id);
+
+-- ----------------------------------------------------------------------------
+-- Trigger para manter updated_at atualizado (reutiliza public.set_updated_at)
+-- ----------------------------------------------------------------------------
+drop trigger if exists workspace_open_databases_set_updated_at on public.workspace_open_databases;
+create trigger workspace_open_databases_set_updated_at
+  before update on public.workspace_open_databases
+  for each row
+  execute function public.set_updated_at();
 
 
 -- ============================================================================

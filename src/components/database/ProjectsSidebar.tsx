@@ -27,8 +27,17 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { DEFAULT_PROJECT_COLOR, defaultColorForCategory } from "@/lib/database";
-import type { ProjectCategory } from "@/types/database";
+import {
+  DEFAULT_PROJECT_COLOR,
+  defaultColorForCategory,
+} from "@/lib/database";
+import { databaseIcon } from "@/lib/database-icons";
+import {
+  buildWorkspaceIndex,
+  type WorkspaceSearchResult,
+} from "@/components/database/workspace-search";
+import { WorkspaceSearchPopover } from "@/components/database/WorkspaceSearchPopover";
+import type { Database, ProjectCategory } from "@/types/database";
 import {
   CategoryEditPopover,
   CreateProjectPopover,
@@ -36,6 +45,10 @@ import {
   type NewProjectInput,
   type ProjectSummary,
 } from "@/components/database/ProjectsScreen";
+import {
+  CreateDatabasePopover,
+  type NewDatabaseInput,
+} from "@/components/database/DatabasesScreen";
 
 /** Chave de persistência do estado minimizado da sidebar de projetos. */
 const COLLAPSED_KEY = "workspace:projectsSidebarCollapsed";
@@ -53,10 +66,25 @@ interface ProjectsSidebarProps {
   projects: ProjectSummary[];
   /** Categorias do usuário (persistidas), já ordenadas por `position`. */
   categories: ProjectCategory[];
+  /**
+   * Todos os databases do usuário (com colunas e modelos). Alimenta a busca
+   * global (propriedades, abas e modelos) — não altera a lista de projetos.
+   * Opcional para não quebrar consumidores antigos (ex.: `tools/*.tsx`).
+   */
+  databases?: Database[];
   /** Projeto ativo no Workspace (`null` = tela de projetos). */
   activeProjectId: string | null;
   /** Abre um projeto (passa a exibir os databases daquele projeto). */
   onOpenProject: (id: string) => void;
+  /**
+   * Abre um resultado da paleta de busca global (database, propriedade, aba,
+   * modelo ou item). Categorias são tratadas dentro da própria sidebar.
+   */
+  onOpenSearchResult?: (result: WorkspaceSearchResult) => void;
+  /** Cria um database no projeto informado (popover do projeto). */
+  onCreateDatabase?: (projectId: string, input: NewDatabaseInput) => void;
+  /** Exclui um database (popover do projeto). */
+  onDeleteDatabase?: (id: string) => void;
   /** Cria um projeto com os dados informados no popover e entra nele. */
   onCreateProject: (input: NewProjectInput) => void;
   /** Persiste uma categoria criada no popover (idempotente). */
@@ -380,6 +408,184 @@ function CategoriesManagerPopover({
 }
 
 /**
+ * Popover com os **databases de um projeto**, aberto ao clicar no projeto na
+ * sidebar. Renderizado em portal com `position: fixed`, no mesmo lugar do
+ * popover de busca da sidebar. Reúne a busca e a criação de databases (que
+ * antes viviam na página de databases): filtrar, criar, abrir e excluir.
+ */
+function ProjectDatabasesPopover({
+  anchorEl,
+  projectName,
+  databases,
+  onOpenDatabase,
+  onOpenProject,
+  onCreateDatabase,
+  onDeleteDatabase,
+  onClose,
+}: {
+  anchorEl: HTMLElement;
+  projectName: string;
+  /** Databases do projeto (já filtrados pelo chamador). */
+  databases: Database[];
+  onOpenDatabase: (id: string) => void;
+  onOpenProject: () => void;
+  /** Abre o popover de criação (o chamador fecha este e ancora o formulário). */
+  onCreateDatabase: () => void;
+  onDeleteDatabase: (id: string) => void;
+  onClose: () => void;
+}) {
+  /** Posição/tamanho (viewport) do popover, no mesmo lugar da busca da sidebar. */
+  const [pos, setPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
+  /** Busca por nome do database (mesma da página de databases). */
+  const [search, setSearch] = useState("");
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return databases;
+    return databases.filter((db) => db.name.toLowerCase().includes(q));
+  }, [databases, search]);
+
+  // Mesma posição do popover de busca da sidebar: centralizado na horizontal,
+  // com 5px abaixo do header (o topo da sidebar é exatamente a base do header).
+  useLayoutEffect(() => {
+    const sidebar = anchorEl.closest("aside") ?? anchorEl;
+    const rect = sidebar.getBoundingClientRect();
+    const width = Math.max(320, Math.min(560, window.innerWidth - 32));
+    setPos({
+      top: rect.top + 5,
+      left: Math.max(8, (window.innerWidth - width) / 2),
+      width,
+    });
+  }, [anchorEl]);
+
+  // Foca a busca assim que o popover abre.
+  useEffect(() => {
+    searchInputRef.current?.focus();
+  }, []);
+
+  // Fecha com Esc.
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
+
+  return createPortal(
+    <>
+      <div className="fixed inset-0 z-[60]" onClick={onClose} role="presentation" />
+      <div
+        style={
+          pos
+            ? { top: pos.top, left: pos.left, width: pos.width }
+            : { top: -9999, left: -9999 }
+        }
+        className="fixed z-[60] rounded-md border bg-popover p-2 shadow-lg"
+        role="dialog"
+        aria-label={`Databases de ${projectName}`}
+        onClick={(e) => e.stopPropagation()}
+      >
+        {/* Cabeçalho: nome do projeto (abre o projeto) + criar database à direita. */}
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            onClick={onOpenProject}
+            title="Abrir projeto"
+            className="flex min-w-0 flex-1 items-center gap-1.5 rounded px-1 py-1 text-left text-[11px] uppercase tracking-wide text-muted-foreground hover:bg-accent"
+          >
+            <FolderKanban className="h-3.5 w-3.5 flex-none" />
+            <span className="min-w-0 flex-1 truncate">{projectName}</span>
+          </button>
+          <button
+            type="button"
+            onClick={onCreateDatabase}
+            title="Criar database"
+            aria-label="Criar database"
+            className="flex flex-none items-center gap-1 rounded px-1.5 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Plus className="h-3.5 w-3.5 flex-none" />
+            <span className="whitespace-nowrap">Criar database</span>
+          </button>
+        </div>
+
+        {/* Busca de databases do projeto (trazida da página de databases). */}
+        <div className="relative mt-1">
+          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            ref={searchInputRef}
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            onKeyDown={(e) => {
+              // Esc: limpa a busca sem fechar o popover.
+              if (e.key === "Escape" && search) {
+                e.stopPropagation();
+                setSearch("");
+              }
+            }}
+            placeholder="Buscar database..."
+            aria-label="Buscar database por nome"
+            autoComplete="off"
+            className="pl-7"
+          />
+        </div>
+
+        {/* Lista de databases do projeto (ou estados vazios). */}
+        {databases.length === 0 ? (
+          <p className="mt-2 px-1 pb-1 text-xs text-muted-foreground">
+            Nenhum database neste projeto.
+          </p>
+        ) : filtered.length === 0 ? (
+          <p className="mt-2 px-1 pb-1 text-xs text-muted-foreground">
+            Nenhum database encontrado.
+          </p>
+        ) : (
+          <ul className="no-scrollbar mt-1 flex max-h-[50vh] flex-col gap-0.5 overflow-y-auto">
+            {filtered.map((db) => {
+              const Icon = databaseIcon(db.icon);
+              return (
+                <li
+                  key={db.id}
+                  className="group flex items-center gap-0.5 rounded hover:bg-accent"
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpenDatabase(db.id)}
+                    title={db.name}
+                    className="flex min-w-0 flex-1 items-center gap-2 rounded px-2 py-1.5 text-left text-sm"
+                  >
+                    <Icon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                    <span className="min-w-0 flex-1 truncate">{db.name}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onDeleteDatabase(db.id)}
+                    aria-label={`Excluir ${db.name}`}
+                    title="Excluir database"
+                    className="mr-0.5 flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </div>
+    </>,
+    document.body,
+  );
+}
+
+/**
  * Sidebar esquerda da área de Workspace (estilo Notion).
  *
  * Lista os projetos do usuário agrupados pela categoria (na ordem persistida),
@@ -392,8 +598,12 @@ function CategoriesManagerPopover({
 export function ProjectsSidebar({
   projects,
   categories,
+  databases = [],
   activeProjectId,
   onOpenProject,
+  onOpenSearchResult,
+  onCreateDatabase,
+  onDeleteDatabase,
   onCreateProject,
   onCreateCategory,
   onReorderCategories,
@@ -409,6 +619,8 @@ export function ProjectsSidebar({
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   /** Texto do filtro de busca de projetos (por nome). */
   const [query, setQuery] = useState("");
+  /** Botão da lupa que abriu o popover de busca (`null` = fechado). */
+  const [searchAnchor, setSearchAnchor] = useState<HTMLElement | null>(null);
   /** Elemento ao qual o popover de criação de projeto fica ancorado. */
   const [createAnchor, setCreateAnchor] = useState<HTMLElement | null>(null);
   /** Referência à própria sidebar (usada como âncora do popover de criação). */
@@ -427,6 +639,23 @@ export function ProjectsSidebar({
   const [optionsAnchor, setOptionsAnchor] = useState<{
     el: HTMLElement;
     project: ProjectSummary;
+  } | null>(null);
+  /**
+   * Linha de projeto cujo popover de **databases do projeto** está aberto
+   * (aberto ao clicar no projeto) — guarda o botão âncora e o projeto.
+   */
+  const [projectAnchor, setProjectAnchor] = useState<{
+    el: HTMLElement;
+    project: ProjectSummary;
+  } | null>(null);
+  /**
+   * Formulário de **criação de database** aberto pelo popover do projeto:
+   * guarda o botão âncora (a linha do projeto, que permanece montada) e o
+   * projeto em que o database será criado.
+   */
+  const [createDb, setCreateDb] = useState<{
+    el: HTMLElement;
+    projectId: string;
   } | null>(null);
   /**
    * Ordem exibida localmente (ids dos projetos). Deriva de `projects` (que vem
@@ -720,6 +949,35 @@ export function ProjectsSidebar({
       .filter((group) => group.items.length > 0);
   }, [groups, query]);
 
+  /** Índice da busca global (projetos/categorias/databases/propriedades/abas/modelos). */
+  const searchIndex = useMemo(
+    () => buildWorkspaceIndex({ projects, categories, databases }),
+    [projects, categories, databases],
+  );
+
+  /**
+   * Abre um resultado da paleta: fecha o popover e limpa a busca (a lista da
+   * sidebar volta ao normal). Categorias são resolvidas aqui — expandem o grupo
+   * correspondente em vez de navegar.
+   */
+  const openSearchResult = useCallback(
+    (result: WorkspaceSearchResult) => {
+      setQuery("");
+      setSearchAnchor(null);
+      if (result.kind === "category") {
+        setCollapsedGroups((prev) => {
+          if (!prev.has(result.name)) return prev;
+          const next = new Set(prev);
+          next.delete(result.name);
+          return next;
+        });
+        return;
+      }
+      onOpenSearchResult?.(result);
+    },
+    [onOpenSearchResult],
+  );
+
   // Estado minimizado: rail estreito apenas com os controles essenciais.
   if (collapsed) {
     return (
@@ -744,6 +1002,17 @@ export function ProjectsSidebar({
           className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Plus className="h-4 w-4" />
+        </button>
+        <button
+          type="button"
+          onClick={(e) => setSearchAnchor(e.currentTarget)}
+          aria-label="Buscar no Workspace"
+          aria-haspopup="dialog"
+          aria-expanded={searchAnchor !== null}
+          title="Buscar no Workspace"
+          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          <Search className="h-4 w-4" />
         </button>
         <button
           type="button"
@@ -777,23 +1046,66 @@ export function ProjectsSidebar({
       // Rede de seguranca: o `dragend` borbulha do grip ate aqui. Se o arraste
       // terminar fora de um alvo valido (ESC, area externa), encerra o estado.
       onDragEnd={endProjectDrag}
-      className="scrollbar-on-hover hidden w-60 shrink-0 flex-col gap-3 overflow-y-scroll border-r bg-background/60 p-3 md:flex"
+      // `overflow-y-auto` (e não `scroll`): a barra só existe quando o conteúdo
+      // realmente passa da altura. O `scrollbar-gutter: stable` do
+      // `.scrollbar-on-hover` mantém o espaço reservado, então nada desloca.
+      className="scrollbar-on-hover hidden w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-background/60 p-3 md:flex"
     >
-      <section className="flex flex-col gap-0.5">
-        <div className="mb-0.5 flex items-center justify-between px-1">
+      {/* O cabeçalho e a lista avançam 12px sobre o padding/gutter da sidebar
+          (`-mr-3`) para que a borda direita das linhas fique alinhada com o
+          grupo de ícones do rótulo. */}
+      <section className="-mr-3 flex flex-col gap-0.5">
+        {/* As ações (busca e categorias) ficam na linha do rótulo para não
+            competirem visualmente com a lista de projetos; "Novo projeto"
+            permanece como linha com texto. */}
+        <div className="mb-0.5 flex items-center justify-between gap-1 pl-1">
           <span className="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
             <FolderKanban className="h-3.5 w-3.5" />
             Projetos
           </span>
-          <button
-            type="button"
-            onClick={toggleCollapsed}
-            aria-label="Minimizar sidebar de projetos"
-            title="Minimizar sidebar de projetos"
-            className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-          >
-            <PanelLeftClose className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-0.5">
+            {/* Lupa: abre o popover de busca **ao lado da sidebar**. */}
+            <button
+              type="button"
+              onClick={(e) => setSearchAnchor(e.currentTarget)}
+              aria-label="Buscar no Workspace"
+              aria-haspopup="dialog"
+              aria-expanded={searchAnchor !== null}
+              title="Buscar no Workspace"
+              className={cn(
+                "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground",
+                searchAnchor && "bg-accent text-foreground",
+              )}
+            >
+              <Search className="h-3.5 w-3.5" />
+            </button>
+
+            {/* Tags: abre o gerenciador de categorias de projetos. */}
+            <button
+              type="button"
+              onClick={(e) => setCategoriesAnchor(e.currentTarget)}
+              aria-label="Gerenciar categorias"
+              aria-haspopup="dialog"
+              aria-expanded={categoriesAnchor !== null}
+              title="Gerenciar categorias"
+              className={cn(
+                "flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground",
+                categoriesAnchor && "bg-accent text-foreground",
+              )}
+            >
+              <Tags className="h-3.5 w-3.5" />
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleCollapsed}
+              aria-label="Minimizar sidebar de projetos"
+              title="Minimizar sidebar de projetos"
+              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+            >
+              <PanelLeftClose className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         <button
@@ -804,28 +1116,6 @@ export function ProjectsSidebar({
         >
           <Plus className="h-3.5 w-3.5 flex-none" />
           <span className="min-w-0 flex-1 truncate">Novo projeto</span>
-        </button>
-
-        <div className="relative">
-          <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
-            placeholder="Buscar projeto"
-            autoComplete="off"
-            aria-label="Buscar projeto pelo nome"
-            className="pl-7"
-          />
-        </div>
-
-        <button
-          type="button"
-          onClick={(e) => setCategoriesAnchor(e.currentTarget)}
-          aria-label="Gerenciar categorias"
-          title="Gerenciar categorias"
-          className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Tags className="h-3.5 w-3.5 flex-none" />
         </button>
       </section>
 
@@ -838,7 +1128,7 @@ export function ProjectsSidebar({
           Nenhum projeto encontrado.
         </p>
       ) : (
-        <div className="flex flex-col gap-2">
+        <div className="-mr-3 flex flex-col gap-2">
           {filteredGroups.map((group) => {
             const key = group.name || "__uncategorized__";
             const isGroupCollapsed = collapsedGroups.has(key);
@@ -998,6 +1288,7 @@ export function ProjectsSidebar({
                               draggable
                               onDragStart={(e) => {
                                 projectDragActiveRef.current = true;
+                                setProjectAnchor(null);
                                 setDragProject({
                                   from: project.id,
                                   over: project.id,
@@ -1022,7 +1313,14 @@ export function ProjectsSidebar({
                             </button>
                             <button
                               type="button"
-                              onClick={() => onOpenProject(project.id)}
+                              onClick={(e) => {
+                                const el = e.currentTarget;
+                                setProjectAnchor((cur) =>
+                                  cur?.project.id === project.id
+                                    ? null
+                                    : { el, project },
+                                );
+                              }}
                               title={project.name}
                               className={cn(
                                 "flex min-w-0 flex-1 items-center gap-2 rounded py-1.5 pl-6 pr-6 text-left text-sm",
@@ -1035,12 +1333,13 @@ export function ProjectsSidebar({
                               type="button"
                               onClick={(e) => {
                                 e.stopPropagation();
+                                setProjectAnchor(null);
                                 setOptionsAnchor({ el: e.currentTarget, project });
                               }}
                               aria-label={`Opções do projeto ${project.name}`}
                               title="Opções do projeto"
                               className={cn(
-                                "absolute right-1 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground",
+                                "absolute right-0 flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:text-foreground",
                                 optionsOpen
                                   ? "opacity-100"
                                   : "opacity-0 group-hover:opacity-100 focus-visible:opacity-100",
@@ -1091,6 +1390,71 @@ export function ProjectsSidebar({
           projectName={optionsAnchor.project.name}
           onDelete={() => onDeleteProject(optionsAnchor.project.id)}
           onClose={() => setOptionsAnchor(null)}
+        />
+      ) : null}
+
+      {projectAnchor ? (
+        <ProjectDatabasesPopover
+          anchorEl={projectAnchor.el}
+          projectName={projectAnchor.project.name}
+          databases={databases.filter(
+            (d) => d.projectId === projectAnchor.project.id,
+          )}
+          onOpenDatabase={(id) => {
+            const db = databases.find((d) => d.id === id);
+            const projectId = projectAnchor.project.id;
+            setProjectAnchor(null);
+            onOpenSearchResult?.({
+              kind: "database",
+              id,
+              label: db?.name ?? "",
+              databaseId: id,
+              projectId,
+            });
+          }}
+          onOpenProject={() => {
+            const id = projectAnchor.project.id;
+            setProjectAnchor(null);
+            onOpenProject(id);
+          }}
+          onCreateDatabase={() => {
+            setCreateDb({
+              el: projectAnchor.el,
+              projectId: projectAnchor.project.id,
+            });
+            setProjectAnchor(null);
+          }}
+          onDeleteDatabase={(id) => onDeleteDatabase?.(id)}
+          onClose={() => setProjectAnchor(null)}
+        />
+      ) : null}
+
+      {createDb ? (
+        <CreateDatabasePopover
+          anchorEl={createDb.el}
+          databases={databases.map((d) => ({
+            id: d.id,
+            name: d.name,
+            icon: d.icon,
+            linkedDatabaseId: d.linkedDatabaseId ?? null,
+          }))}
+          onCancel={() => setCreateDb(null)}
+          onConfirm={(input) => {
+            onCreateDatabase?.(createDb.projectId, input);
+            setCreateDb(null);
+          }}
+        />
+      ) : null}
+
+      {searchAnchor ? (
+        <WorkspaceSearchPopover
+          anchorEl={searchAnchor}
+          query={query}
+          onQueryChange={setQuery}
+          index={searchIndex}
+          databases={databases}
+          onOpenResult={openSearchResult}
+          onClose={() => setSearchAnchor(null)}
         />
       ) : null}
     </aside>

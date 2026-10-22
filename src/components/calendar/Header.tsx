@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect, useState } from "react";
+import Image from "next/image";
 import {
   ChevronLeft,
   ChevronRight,
@@ -42,7 +44,21 @@ interface HeaderProps {
   onCreate: () => void;
   userName: string;
   userEmail: string;
+  /** Foto do usuário (provedor OAuth); `null` = usar o ícone padrão. */
+  userAvatar: string | null;
 }
+
+/**
+ * Imagem da marca (wordmark "Nottase"): substitua o arquivo `public/logo.png`
+ * pela sua imagem. O tamanho intrínseco abaixo (2172×724 ≈ 3:1) é usado só para
+ * o Next calcular a proporção — se trocar por uma imagem de proporção diferente,
+ * atualize `LOGO_WIDTH`/`LOGO_HEIGHT`. Para outro nome/formato, troque o caminho
+ * (ex.: `/logo.svg`) e, no caso de SVG, adicione `unoptimized` na `<Image>` (o
+ * otimizador do Next não processa SVG por padrão).
+ */
+const LOGO_SRC = "/logo.png";
+const LOGO_WIDTH = 2172;
+const LOGO_HEIGHT = 724;
 
 const VIEW_OPTIONS: { mode: CalendarViewMode; label: string }[] = [
   { mode: "week", label: "Semana" },
@@ -69,7 +85,40 @@ export function Header({
   onCreate,
   userName,
   userEmail,
+  userAvatar,
 }: HeaderProps) {
+  /** Menu do usuário (avatar) aberto. */
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  /** Popover "Conta" (foto/nome/e-mail) aberto, dentro do menu. */
+  const [accountOpen, setAccountOpen] = useState(false);
+
+  // Fecha o menu ao clicar fora ou com Esc (Esc fecha primeiro o "Conta").
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    function onPointerDown(event: PointerEvent) {
+      const target = event.target as HTMLElement | null;
+      if (
+        target?.closest("[data-user-menu-trigger]") ||
+        target?.closest("[data-user-menu]")
+      ) {
+        return;
+      }
+      setUserMenuOpen(false);
+      setAccountOpen(false);
+    }
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      if (accountOpen) setAccountOpen(false);
+      else setUserMenuOpen(false);
+    }
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [userMenuOpen, accountOpen]);
+
   const anchor = new Date(year, month, day);
   const isCalendar = appView === "calendar";
   const title = isCalendar
@@ -91,7 +140,7 @@ export function Header({
 
   return (
     <header className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-      <div className="flex flex-wrap items-center justify-between gap-3 px-4 py-2">
+      <div className="relative flex flex-wrap items-center justify-between gap-3 px-4 py-2">
         <div className="flex items-center gap-3">
           <div className="flex items-center gap-1">
             <div className="flex items-center rounded-md border p-0.5">
@@ -122,6 +171,23 @@ export function Header({
               <h1 className="text-base font-semibold">{title}</h1>
             </div>
           ) : null}
+        </div>
+
+        {/* Marca centralizada (a imagem já traz o nome "Nottase").
+            `pointer-events-none` para não bloquear cliques dos controles;
+            escondida em telas estreitas para não sobrepor o título/controles.
+            O logo é branco: `brightness-0` o deixa preto no tema claro e
+            `dark:brightness-100` mantém branco no tema escuro. */}
+        <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center sm:flex">
+          <Image
+            src={LOGO_SRC}
+            alt="Nottase"
+            width={LOGO_WIDTH}
+            height={LOGO_HEIGHT}
+            sizes="96px"
+            priority
+            className="h-8 w-auto flex-none object-contain brightness-0 dark:brightness-100"
+          />
         </div>
 
         <div className="flex flex-wrap items-center gap-1">
@@ -161,33 +227,108 @@ export function Header({
             </>
           ) : null}
 
-          <div className="ml-2 flex items-center gap-2 border-l pl-3">
-            <div className="hidden items-center gap-2 sm:flex">
-              <span className="flex h-7 w-7 items-center justify-center rounded-full bg-primary/10">
-                <User className="h-3.5 w-3.5 text-primary" />
-              </span>
-              <div className="flex flex-col leading-tight">
-                <span className="max-w-[140px] truncate text-xs font-medium">
-                  {userName}
-                </span>
-                {userEmail ? (
-                  <span className="max-w-[140px] truncate text-[10px] text-muted-foreground">
-                    {userEmail}
-                  </span>
+          {/* Lado direito: apenas o avatar. Clicar abre o menu do usuário
+              ("Conta" → foto/nome/e-mail; "Sair" → encerra a sessão). */}
+          <div className="relative ml-2 flex items-center">
+            <button
+              type="button"
+              data-user-menu-trigger
+              onClick={() => {
+                setUserMenuOpen((open) => !open);
+                setAccountOpen(false);
+              }}
+              aria-haspopup="menu"
+              aria-expanded={userMenuOpen}
+              aria-label="Menu do usuário"
+              title={userName}
+              className="flex h-8 w-8 flex-none items-center justify-center overflow-hidden rounded-full border bg-primary/10 transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {userAvatar ? (
+                <Image
+                  src={userAvatar}
+                  alt=""
+                  width={32}
+                  height={32}
+                  unoptimized
+                  referrerPolicy="no-referrer"
+                  className="h-full w-full object-cover"
+                />
+              ) : (
+                <User className="h-4 w-4 text-primary" />
+              )}
+            </button>
+
+            {userMenuOpen ? (
+              <div
+                data-user-menu
+                role="menu"
+                aria-label="Menu do usuário"
+                className="absolute right-0 top-full z-50 mt-1 w-44 rounded-md border bg-popover p-1 shadow-md"
+              >
+                <button
+                  type="button"
+                  role="menuitem"
+                  onClick={() => setAccountOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={accountOpen}
+                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                >
+                  <User className="h-4 w-4 flex-none" />
+                  Conta
+                  <ChevronRight className="ml-auto h-3.5 w-3.5 flex-none" />
+                </button>
+
+                <form action="/auth/signout" method="post">
+                  <button
+                    type="submit"
+                    role="menuitem"
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <LogOut className="h-4 w-4 flex-none" />
+                    Sair
+                  </button>
+                </form>
+
+                {/* Popover "Conta": foto, nome e e-mail. Abre à esquerda do menu
+                    (o avatar fica na borda direita da tela). */}
+                {accountOpen ? (
+                  <div
+                    data-user-menu
+                    role="dialog"
+                    aria-label="Conta"
+                    className="absolute right-full top-0 mr-1 w-64 rounded-md border bg-popover p-3 shadow-md"
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-10 w-10 flex-none items-center justify-center overflow-hidden rounded-full bg-primary/10">
+                        {userAvatar ? (
+                          <Image
+                            src={userAvatar}
+                            alt=""
+                            width={40}
+                            height={40}
+                            unoptimized
+                            referrerPolicy="no-referrer"
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <User className="h-5 w-5 text-primary" />
+                        )}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="truncate text-sm font-medium text-foreground">
+                          {userName}
+                        </p>
+                        {userEmail ? (
+                          <p className="truncate text-xs text-muted-foreground">
+                            {userEmail}
+                          </p>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
                 ) : null}
               </div>
-            </div>
-            <form action="/auth/signout" method="post">
-              <Button
-                type="submit"
-                variant="ghost"
-                size="icon"
-                aria-label="Sair"
-                title="Sair"
-              >
-                <LogOut />
-              </Button>
-            </form>
+            ) : null}
           </div>
         </div>
       </div>

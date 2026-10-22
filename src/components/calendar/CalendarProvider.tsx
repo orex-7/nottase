@@ -26,9 +26,15 @@ import type { CalendarEvent } from "@/types/event";
 interface CalendarProviderProps {
   userName: string;
   userEmail: string;
+  /** Foto do usuário (provedor OAuth); `null` = usar o ícone padrão. */
+  userAvatar: string | null;
 }
 
-export function CalendarProvider({ userName, userEmail }: CalendarProviderProps) {
+export function CalendarProvider({
+  userName,
+  userEmail,
+  userAvatar,
+}: CalendarProviderProps) {
   const appView = useCalendarStore((s) => s.appView);
   const viewMode = useCalendarStore((s) => s.viewMode);
   const year = useCalendarStore((s) => s.year);
@@ -308,6 +314,7 @@ export function CalendarProvider({ userName, userEmail }: CalendarProviderProps)
         onCreate={handleCreateToday}
         userName={userName}
         userEmail={userEmail}
+        userAvatar={userAvatar}
       />
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
@@ -372,7 +379,7 @@ export function CalendarProvider({ userName, userEmail }: CalendarProviderProps)
             </div>
           </>
         ) : (
-          <DatabaseView />
+          <DatabaseView userName={userName} />
         )}
       </div>
 

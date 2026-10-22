@@ -87,11 +87,19 @@ export function DatabasesScreen({
 
   /** Busca por nome do database (case-insensitive). */
   const [search, setSearch] = useState("");
+  /** Busca expandida (a barra mostra só a lupa até clicar nela). */
+  const [searchOpen, setSearchOpen] = useState(false);
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const filteredDatabases = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return databases;
     return databases.filter((db) => db.name.toLowerCase().includes(q));
   }, [databases, search]);
+
+  // Foca o campo assim que a busca é expandida pelo ícone de lupa.
+  useEffect(() => {
+    if (searchOpen) searchInputRef.current?.focus();
+  }, [searchOpen]);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
@@ -106,16 +114,40 @@ export function DatabasesScreen({
           </div>
 
           <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Buscar database..."
+            {/* Busca recolhida: só o ícone de lupa; clicar abre (e foca) o input. */}
+            {searchOpen ? (
+              <div className="relative">
+                <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  ref={searchInputRef}
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key !== "Escape") return;
+                    // Esc: limpa a busca; sem texto, recolhe de volta à lupa.
+                    if (search) setSearch("");
+                    else setSearchOpen(false);
+                  }}
+                  onBlur={() => {
+                    // Recolhe ao sair do campo, mas só sem texto.
+                    if (!search.trim()) setSearchOpen(false);
+                  }}
+                  placeholder="Buscar database..."
+                  aria-label="Buscar database por nome"
+                  className="w-48 pl-7"
+                />
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setSearchOpen(true)}
                 aria-label="Buscar database por nome"
-                className="w-48 pl-7"
-              />
-            </div>
+                title="Buscar database"
+              >
+                <Search className="h-3.5 w-3.5" />
+              </Button>
+            )}
             <Button ref={headerButtonRef} size="sm" onClick={openCreate}>
               <Plus />
               Criar database
@@ -238,6 +270,15 @@ export interface CreateDatabasePopoverProps {
   /** Elemento ao qual o popover fica ancorado (o botão "Criar database"). */
   anchorEl: HTMLElement | null;
   /**
+   * Modo de posicionamento:
+   * - `"sidebar"` (padrão): mesma posição dos demais popovers da sidebar
+   *   (centralizado na viewport, logo abaixo do header).
+   * - `"anchor"`: abre logo **abaixo** do elemento âncora, alinhado à esquerda e
+   *   mantido dentro da viewport — usado pelos botões da área principal, que não
+   *   têm uma `<aside>` ancestral.
+   */
+  placement?: "sidebar" | "anchor";
+  /**
    * Databases existentes que podem ser **espelhados** (visão vinculada). Visões
    * vinculadas são excluídas da lista (não se espelha uma visão).
    */
@@ -259,6 +300,7 @@ export interface CreateDatabasePopoverProps {
  */
 export function CreateDatabasePopover({
   anchorEl,
+  placement = "sidebar",
   databases = [],
   onCancel,
   onConfirm,
@@ -271,23 +313,39 @@ export function CreateDatabasePopover({
   /** Seletor "Espelhar database…" está aberto. */
   const [linkedPickerOpen, setLinkedPickerOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
-  /** Posição (top/left) do popover, calculada ao abrir a partir do âncora. */
-  const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
+  /** Posição/tamanho (viewport) do popover, calculados a partir da sidebar. */
+  const [pos, setPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+  } | null>(null);
 
-  // Posiciona o popover abaixo do âncora, alinhado à esquerda, mantendo-o dentro
-  // da viewport horizontalmente (encosta na borda quando não couber).
+  // Mesma posição dos demais popovers da sidebar: centralizado na horizontal,
+  // com 5px abaixo do header (o topo da sidebar é exatamente a base do header).
+  // No modo `"anchor"` (botões da área principal), abre logo abaixo do âncora,
+  // alinhado à esquerda e mantido dentro da viewport.
   useLayoutEffect(() => {
     if (!anchorEl) return;
-    const rect = anchorEl.getBoundingClientRect();
-    const width = 320;
     const margin = 8;
-    const left = Math.min(
-      Math.max(margin, rect.left),
-      Math.max(margin, window.innerWidth - width - margin),
-    );
-    const top = rect.bottom + 6;
-    setPos({ top, left });
-  }, [anchorEl]);
+    if (placement === "anchor") {
+      const rect = anchorEl.getBoundingClientRect();
+      const width = Math.min(320, window.innerWidth - margin * 2);
+      const left = Math.min(
+        Math.max(margin, rect.left),
+        Math.max(margin, window.innerWidth - width - margin),
+      );
+      setPos({ top: rect.bottom + 6, left, width });
+      return;
+    }
+    const sidebar = anchorEl.closest("aside") ?? anchorEl;
+    const rect = sidebar.getBoundingClientRect();
+    const width = Math.max(320, Math.min(560, window.innerWidth - 32));
+    setPos({
+      top: rect.top + 5,
+      left: Math.max(8, (window.innerWidth - width) / 2),
+      width,
+    });
+  }, [anchorEl, placement]);
 
   // Foca o campo de nome assim que o popover é posicionado.
   useEffect(() => {
@@ -322,8 +380,12 @@ export function CreateDatabasePopover({
   return createPortal(
     <div className="fixed inset-0 z-50" onClick={onCancel} role="presentation">
       <div
-        className="absolute w-80 rounded-lg border bg-popover p-4 shadow-lg"
-        style={pos ? { top: pos.top, left: pos.left } : { top: -9999, left: -9999 }}
+        className="absolute rounded-lg border bg-popover p-4 shadow-lg"
+        style={
+          pos
+            ? { top: pos.top, left: pos.left, width: pos.width }
+            : { top: -9999, left: -9999 }
+        }
         onClick={(e) => e.stopPropagation()}
         role="dialog"
         aria-label="Criar database"

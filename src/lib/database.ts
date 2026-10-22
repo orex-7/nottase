@@ -798,6 +798,77 @@ export async function deleteProjectCategory(
 }
 
 /* -------------------------------------------------------------------------- */
+/* Navegação entre databases abertos (por usuário)                             */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * Navegação entre databases abertos na faixa acima da tabela: os databases
+ * colocados ao lado (chips) e o database aberto no momento. Persistida por
+ * usuário na tabela `workspace_open_databases` (uma linha por usuário).
+ */
+export interface OpenDatabasesState {
+  /** Ids dos databases abertos (chips), na ordem de exibição. */
+  ids: string[];
+  /** Id do database aberto no momento (`null` = nenhum). */
+  selectedId: string | null;
+}
+
+/** Estado vazio da navegação (usuário sem linha salva). */
+export const EMPTY_OPEN_DATABASES: OpenDatabasesState = {
+  ids: [],
+  selectedId: null,
+};
+
+interface WorkspaceOpenDatabasesDbRow {
+  database_ids: unknown;
+  selected_id: string | null;
+}
+
+/**
+ * Lê a navegação salva do usuário autenticado (a RLS limita à própria linha).
+ * Sem linha salva (primeiro uso), devolve o estado vazio.
+ */
+export async function fetchOpenDatabases(): Promise<OpenDatabasesState> {
+  const supabase = createClient();
+  const { data, error } = await supabase
+    .from("workspace_open_databases")
+    .select("database_ids, selected_id")
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return EMPTY_OPEN_DATABASES;
+
+  const row = data as WorkspaceOpenDatabasesDbRow;
+  const ids = Array.isArray(row.database_ids)
+    ? row.database_ids.filter((id): id is string => typeof id === "string")
+    : [];
+  return { ids, selectedId: row.selected_id ?? null };
+}
+
+/**
+ * Salva a navegação do usuário autenticado (upsert de uma linha por usuário).
+ * É uma conveniência de UI: sobrescreve o estado anterior a cada mudança.
+ */
+export async function saveOpenDatabases(
+  state: OpenDatabasesState,
+): Promise<void> {
+  const supabase = createClient();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+  if (!user) throw new Error("not-authenticated");
+
+  const { error } = await supabase.from("workspace_open_databases").upsert(
+    {
+      user_id: user.id,
+      database_ids: state.ids,
+      selected_id: state.selectedId,
+    },
+    { onConflict: "user_id" },
+  );
+  if (error) throw error;
+}
+
+/* -------------------------------------------------------------------------- */
 /* Linhas                                                                      */
 /* -------------------------------------------------------------------------- */
 
@@ -1047,6 +1118,39 @@ export async function nextRowPosition(databaseId: string): Promise<number> {
   });
   if (error) throw error;
   return typeof data === "number" ? data : Number(data ?? 0);
+}
+
+/** Um resultado da busca global de itens: a linha + o database a que pertence. */
+export interface RowSearchHit {
+  databaseId: string;
+  row: DbRow;
+}
+
+/** Nº padrão de resultados da busca global (o servidor também limita a 50). */
+export const ROW_SEARCH_LIMIT = 10;
+
+/**
+ * Busca itens (linhas) em **todos** os databases do usuário (RPC
+ * `database_rows_search`), por substring nos valores, usando o índice trigram.
+ * A RLS limita ao dono. Termo vazio → nenhuma consulta. Nunca renderizar o
+ * `values` como HTML (pode conter o conteúdo da página) — use só o título.
+ */
+export async function searchDatabaseRows(
+  search: string,
+  limit = ROW_SEARCH_LIMIT,
+): Promise<RowSearchHit[]> {
+  const term = search.trim();
+  if (!term) return [];
+  const supabase = createClient();
+  const { data, error } = await supabase.rpc("database_rows_search", {
+    p_search: term,
+    p_limit: limit,
+  });
+  if (error) throw error;
+  return ((data as DatabaseRowsDbRow[] | null) ?? []).map((row) => ({
+    databaseId: row.database_id,
+    row: rowToDbRow(row),
+  }));
 }
 
 /** Busca uma única linha pelo id (usada pelo popover do calendário). */

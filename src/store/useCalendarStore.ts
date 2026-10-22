@@ -17,6 +17,21 @@ const ACTIVE_PROJECT_KEY = "workspace:activeProjectId";
 /** Chave de persistência dos databases fixados na sidebar do calendário. */
 const SIDEBAR_DATABASES_KEY = "calendar:sidebarDatabases";
 
+/**
+ * Foco a aplicar ao abrir um database pela paleta de busca global (Workspace).
+ * Tudo opcional: um pedido de abertura sem foco apenas exibe a tela do database.
+ */
+export interface DatabaseFocusRequest {
+  /** Ativa a aba (visualização) deste id. */
+  viewId?: string;
+  /** Abre o editor da propriedade (coluna) deste id. */
+  editColumnId?: string;
+  /** Abre a página do item (linha) deste id. */
+  rowId?: string;
+  /** Abre o diálogo de modelos de página. */
+  openTemplates?: boolean;
+}
+
 /** Referência leve a um database exibido na sidebar (id + nome + ícone). */
 export interface SidebarDatabase {
   id: string;
@@ -109,7 +124,10 @@ interface CalendarState {
    * calendário. `create` pede um novo database; `open` pede abrir um existente.
    * Consumido (e limpo) assim que a tela de database estiver pronta.
    */
-  pendingDatabaseRequest: { type: "create" } | { type: "open"; id: string } | null;
+  pendingDatabaseRequest:
+    | { type: "create" }
+    | ({ type: "open"; id: string } & DatabaseFocusRequest)
+    | null;
   /**
    * Databases fixados na sidebar do calendário (mostrados acima do botão
    * "Adicionar database"). Persistido em localStorage.
@@ -129,8 +147,15 @@ interface CalendarState {
   setActiveProjectId: (id: string | null) => void;
   /** Pede a criação de um novo database (vai para a tela de database/projeto). */
   requestCreateDatabase: (projectId?: string | null) => void;
-  /** Pede a abertura de um database existente (vai para a tela de database). */
-  requestOpenDatabase: (id: string, projectId?: string | null) => void;
+  /**
+   * Pede a abertura de um database existente (vai para a tela de database).
+   * O `focus` (opcional) indica aba/propriedade/item/modelos a destacar.
+   */
+  requestOpenDatabase: (
+    id: string,
+    projectId?: string | null,
+    focus?: DatabaseFocusRequest,
+  ) => void;
   /** Consome (limpa) o pedido pendente da tela de database. */
   consumeDatabaseRequest: () => void;
   /** Fixa (ou atualiza) um database na lista da sidebar do calendário. */
@@ -202,13 +227,13 @@ export const useCalendarStore = create<CalendarState>((set) => ({
       pendingDatabaseRequest: { type: "create" },
     });
   },
-  requestOpenDatabase: (id, projectId = null) => {
+  requestOpenDatabase: (id, projectId = null, focus = {}) => {
     saveAppView("database");
     saveActiveProjectId(projectId);
     set({
       appView: "database",
       activeProjectId: projectId,
-      pendingDatabaseRequest: { type: "open", id },
+      pendingDatabaseRequest: { type: "open", id, ...focus },
     });
   },
   consumeDatabaseRequest: () => set({ pendingDatabaseRequest: null }),
