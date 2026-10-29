@@ -17,6 +17,7 @@ import {
   Tags,
   Trash2,
   X,
+  Zap,
 } from "lucide-react";
 
 import {
@@ -27,12 +28,18 @@ import {
   columnTypeMeta,
   editableOptionsForColumn,
 } from "@/components/database/database-fields";
-import { VIEW_TYPES, type DbViewType } from "@/components/database/database-views";
+import {
+  PAGE_LAYOUTS,
+  VIEW_TYPES,
+  type DbViewType,
+  type PageLayout,
+} from "@/components/database/database-views";
 import {
   CHART_KINDS,
   type ChartConfig,
 } from "@/components/database/database-chart";
 import { SelectOptionsEditor } from "@/components/database/SelectOptionsPopover";
+import { AutomationsPanel } from "@/components/database/AutomationsPanel";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ICON_OPTIONS, databaseIcon } from "@/lib/database-icons";
@@ -81,6 +88,13 @@ interface TableSettingsPopoverProps {
   activeViewType: DbViewType;
   /** Altera o tipo (layout) da visualização ativa. */
   onChangeViewType: (type: DbViewType) => void;
+  /**
+   * Como a página de um item é aberta: na área do conteúdo ("Página inteira"),
+   * centralizada ou ancorada à direita.
+   */
+  pageLayout: PageLayout;
+  /** Altera como a página de um item é aberta. */
+  onChangePageLayout: (layout: PageLayout) => void;
   /** Configuração da visualização "Gráfico" (para escolher o formato). */
   chartConfig: ChartConfig;
   /** Atualiza a configuração do gráfico (formato etc.). */
@@ -105,7 +119,7 @@ interface TableSettingsPopoverProps {
   /** Salva (ou limpa) a configuração de um rollup. */
   onSaveRollup: (columnId: string, config: RollupConfig | null) => void;
   /** Tela exibida ao abrir o popover (padrão: menu principal). */
-  initialView?: "menu" | "edit" | "visibility" | "layout";
+  initialView?: "menu" | "edit" | "visibility" | "layout" | "automations";
   onClose: () => void;
 }
 
@@ -123,6 +137,8 @@ export function TableSettingsPopover({
   onDeleteDatabase,
   activeViewType,
   onChangeViewType,
+  pageLayout,
+  onChangePageLayout,
   chartConfig,
   onChangeChartConfig,
   databases,
@@ -138,9 +154,9 @@ export function TableSettingsPopover({
   /** Id da coluna que está com o seletor de tipo aberto. */
   const [openTypeFor, setOpenTypeFor] = useState<string | null>(null);
   /** Tela interna ativa do popover. */
-  const [view, setView] = useState<"menu" | "edit" | "visibility" | "layout">(
-    "menu",
-  );
+  const [view, setView] = useState<
+    "menu" | "edit" | "visibility" | "layout" | "automations"
+  >("menu");
   /** Id da coluna cujo editor de opções (select/multi_select) está aberto. */
   const [openOptionsFor, setOpenOptionsFor] = useState<string | null>(null);
   /** Seletor de icone do database (ao lado do input de nome) esta aberto. */
@@ -203,6 +219,15 @@ export function TableSettingsPopover({
   /** Icone atual do database (resolvido a partir do nome persistido). */
   const ActiveIcon = databaseIcon(icon);
 
+  /**
+   * Visões vinculadas não recebem automações: elas não têm linhas próprias (o
+   * worker opera no database de origem). Mesmo predicado usado nos alvos de
+   * relação (ver `relationTargets`).
+   */
+  const currentIsView = databases.some(
+    (d) => d.id === currentDatabaseId && Boolean(d.linkedDatabaseId),
+  );
+
   if (!open) return null;
 
   return (
@@ -240,7 +265,9 @@ export function TableSettingsPopover({
                 ? "Editar propriedades"
                 : view === "layout"
                   ? "Layout"
-                  : "Visibilidade de propriedades"}
+                  : view === "automations"
+                    ? "Automações"
+                    : "Visibilidade de propriedades"}
           </span>
           <button
             type="button"
@@ -343,6 +370,19 @@ export function TableSettingsPopover({
                   </span>
                   <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
                 </button>
+                {currentIsView ? null : (
+                  <button
+                    type="button"
+                    onClick={() => setView("automations")}
+                    className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
+                  >
+                    <Zap className="h-4 w-4 flex-none text-muted-foreground" />
+                    <span className="flex-1 text-[13px] font-medium">
+                      Automações
+                    </span>
+                    <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                  </button>
+                )}
               </div>
             </>
           ) : view === "edit" ? (
@@ -745,38 +785,82 @@ export function TableSettingsPopover({
             </ul>
             </div>
           ) : view === "layout" ? (
-            <div className="space-y-2 mb-2">
-              <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                Layout
-              </span>
-              <div className="space-y-1">
-                {VIEW_TYPES.map((option) => {
-                  const OptionIcon = option.icon;
-                  const isActive = option.type === activeViewType;
-                  return (
-                    <button
-                      key={option.type}
-                      type="button"
-                      onClick={() => onChangeViewType(option.type)}
-                      aria-pressed={isActive}
-                      title={`Usar layout ${option.label}`}
-                      className={cn(
-                        "flex w-full items-center gap-3 rounded border px-2.5 py-1.5 text-left hover:bg-accent",
-                        isActive ? "border-primary bg-accent" : "border-transparent",
-                      )}
-                    >
-                      <OptionIcon className="h-4 w-4 flex-none text-muted-foreground" />
-                      <span className="flex-1 text-[13px] font-medium">
-                        {option.label}
-                      </span>
-                      {isActive ? (
-                        <Check className="h-4 w-4 flex-none text-primary" />
-                      ) : null}
-                    </button>
-                  );
-                })}
+            <div className="space-y-3 mb-2">
+              <div className="space-y-2">
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Layout
+                </span>
+                <div className="space-y-1">
+                  {VIEW_TYPES.map((option) => {
+                    const OptionIcon = option.icon;
+                    const isActive = option.type === activeViewType;
+                    return (
+                      <button
+                        key={option.type}
+                        type="button"
+                        onClick={() => onChangeViewType(option.type)}
+                        aria-pressed={isActive}
+                        title={`Usar layout ${option.label}`}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded border px-2.5 py-1.5 text-left hover:bg-accent",
+                          isActive
+                            ? "border-primary bg-accent"
+                            : "border-transparent",
+                        )}
+                      >
+                        <OptionIcon className="h-4 w-4 flex-none text-muted-foreground" />
+                        <span className="flex-1 text-[13px] font-medium">
+                          {option.label}
+                        </span>
+                        {isActive ? (
+                          <Check className="h-4 w-4 flex-none text-primary" />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Como a página do item é aberta (afeta a tabela). */}
+              <div className="space-y-2">
+                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                  Abertura da página
+                </span>
+                <div className="space-y-1">
+                  {PAGE_LAYOUTS.map((option) => {
+                    const isActive = option.layout === pageLayout;
+                    return (
+                      <button
+                        key={option.layout}
+                        type="button"
+                        onClick={() => onChangePageLayout(option.layout)}
+                        aria-pressed={isActive}
+                        title={`Abrir a página ${option.label.toLowerCase()}`}
+                        className={cn(
+                          "flex w-full items-center gap-3 rounded border px-2.5 py-1.5 text-left hover:bg-accent",
+                          isActive
+                            ? "border-primary bg-accent"
+                            : "border-transparent",
+                        )}
+                      >
+                        <span className="flex-1 text-[13px] font-medium">
+                          {option.label}
+                        </span>
+                        {isActive ? (
+                          <Check className="h-4 w-4 flex-none text-primary" />
+                        ) : null}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
+          ) : view === "automations" ? (
+            <AutomationsPanel
+              databaseId={currentDatabaseId}
+              databases={databases}
+              columns={columns}
+            />
           ) : (
             <div className="space-y-2 mb-2">
               <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
@@ -862,8 +946,17 @@ export function TableSettingsPopover({
         ? createPortal(
             <div
               data-table-icon-picker
-              style={{ top: iconPickerPos.top, left: iconPickerPos.left }}
-              className="fixed z-[70] w-64 rounded-md border bg-popover p-2 shadow-md"
+              style={{
+                top: iconPickerPos.top,
+                left: iconPickerPos.left,
+                // Limita à altura que sobra na janela: com 100 ícones o seletor
+                // passa da tela e precisa rolar.
+                maxHeight: Math.max(
+                  160,
+                  window.innerHeight - iconPickerPos.top - 8,
+                ),
+              }}
+              className="fixed z-[70] w-64 overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
               role="menu"
               onClick={(e) => e.stopPropagation()}
             >

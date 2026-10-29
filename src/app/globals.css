@@ -28,36 +28,59 @@
     --input: 214.3 31.8% 91.4%;
     --ring: 222.2 84% 4.9%;
     --radius: 0.5rem;
-    /* Azul usado para destacar a célula/seleção ativa da tabela do editor. */
-    --table-select: 217 91% 60%;
+    /* Vermelho de identidade (mais discreto: menos saturado) usado para
+       destacar a célula/seleção ativa. */
+    --table-select: 358 50% 45%;
+    /* Tokens da paleta do app também no tema claro (o app usa apenas o tema
+       escuro, mas evita variáveis indefinidas caso o `dark` seja removido). */
+    --sidebar: 240 4.5% 96%;
+    --faint-foreground: 240 3.8% 46.1%;
+    --selection: 348.8 40% 95%;
+    --success: 151.3 49.8% 40%;
+    --warning: 37.1 70.8% 45%;
   }
 
   .dark {
-    --background: 0 0% 4%;
-    --foreground: 0 0% 92%;
-    --card: 0 0% 8%;
-    --card-foreground: 0 0% 92%;
-    /* Fundo dos popovers: cinza neutro da paleta do app, um tom acima dos
-       cards para dar sensação de superfície elevada (cor sólida). */
-    --popover: 0 0% 12%;
-    --popover-foreground: 0 0% 92%;
-    /* Hover dos itens de popover: cor próxima do fundo do popover (discreta). */
-    --popover-hover: 0 0% 18%;
-    --primary: 0 0% 92%;
-    --primary-foreground: 0 0% 8%;
-    --secondary: 0 0% 14%;
-    --secondary-foreground: 0 0% 92%;
-    --muted: 0 0% 14%;
-    --muted-foreground: 0 0% 62%;
-    --accent: 0 0% 16%;
-    --accent-foreground: 0 0% 96%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 0 0% 16%;
-    --input: 0 0% 16%;
-    --ring: 0 0% 72%;
-    /* Azul de destaque da célula ativa — um pouco mais claro no tema escuro. */
-    --table-select: 213 94% 68%;
+    /* Paleta do app (tema escuro). Grafite neutro com o vermelho como cor de
+       identidade (acento). Cada variável anota a cor de origem (hex). */
+    --background: 240 2.9% 6.9%; /* Fundo principal #111112 */
+    --foreground: 240 4% 95.1%; /* Texto principal #F2F2F3 */
+    /* Superfícies (cards, databases, painéis). */
+    --card: 240 5.7% 10.4%; /* Superfície #19191C */
+    --card-foreground: 240 4% 95.1%;
+    /* Superfície elevada (menus, dropdowns, modais). */
+    --popover: 240 4.2% 13.9%; /* Superfície elevada #222225 */
+    --popover-foreground: 240 4% 95.1%;
+    /* Hover dos itens de popover (neutro, sem vermelho). */
+    --popover-hover: 240 5% 18%; /* Neutro #2C2C30 */
+    /* Vermelho de identidade: botões principais, links e indicadores. Tom
+       menos saturado (mais discreto) que o #E5484D original. */
+    --primary: 358 50% 52%; /* Vermelho principal #C2474B */
+    --primary-foreground: 0 0% 100%; /* Texto branco */
+    --secondary: 240 4.2% 13.9%; /* Superfície elevada #222225 */
+    --secondary-foreground: 240 4% 95.1%;
+    --muted: 240 4.2% 13.9%; /* Superfície elevada #222225 */
+    --muted-foreground: 240 5% 64.9%; /* Texto secundário #A1A1AA */
+    /* Texto discreto (placeholders e informações menos importantes). */
+    --faint-foreground: 240 3.8% 46.1%; /* Texto discreto #71717A */
+    /* Hover/fundo de itens interativos: NEUTRO (grafite), sem vermelho. */
+    --accent: 240 4.2% 13.9%; /* Neutro #222225 */
+    --accent-foreground: 240 4% 95.1%;
+    /* Seleção: itens ATIVOS com fundo vermelho bem sutil. */
+    --selection: 348.8 20% 15.7%; /* Seleção #302023 */
+    --destructive: 358 50% 52%; /* Vermelho (erros) #C2474B */
+    --destructive-foreground: 0 0% 100%;
+    /* Estados do sistema. */
+    --success: 151.3 49.8% 53.1%; /* Verde (sucesso) #4CC38A */
+    --warning: 37.1 70.8% 65.1%; /* Amarelo (avisos) #E5B567 */
+    /* Bordas (divisórias discretas). */
+    --border: 240 4% 19.6%; /* Bordas #303034 */
+    --input: 240 4% 19.6%;
+    --ring: 358 50% 52%; /* Vermelho principal #C2474B */
+    /* Fundo das sidebars (um tom acima do fundo principal). */
+    --sidebar: 240 4.5% 8.6%; /* Sidebar #151517 */
+    /* Indicador da célula ativa da tabela. */
+    --table-select: 358 50% 52%; /* Vermelho principal #C2474B */
   }
 }
 
@@ -96,53 +119,13 @@
     height: 0;
   }
 
-  /* Mostra a barra de rolagem apenas quando o cursor está sobre o elemento,
-     SEM deslocar o conteúdo. O espaço da barra (10px) fica sempre reservado
-     via `scrollbar-gutter: stable` e pela largura fixa de `::-webkit-scrollbar`;
-     fora do hover apenas a alça fica transparente (invisível), então nada se
-     move quando ela aparece. Usada na sidebar de projetos. */
-  .scrollbar-on-hover {
-    /* Reserva o espaço da barra permanentemente (Firefox, Chrome/Edge, Safari). */
+  /* Reserva o espaço da barra de rolagem permanentemente (via
+     `scrollbar-gutter: stable`), para o conteúdo não deslocar quando ela aparece
+     ou some. A alça usa o MESMO visual "slim" das demais barras do app (regras
+     globais de `::-webkit-scrollbar` e `scrollbar-color`). Usada na sidebar de
+     projetos. */
+  .scrollbar-stable {
     scrollbar-gutter: stable;
-    /* Firefox: barra sempre com largura visível, mas alça/trilha transparentes
-       enquanto o mouse não estiver sobre o elemento. */
-    scrollbar-width: auto;
-    scrollbar-color: transparent transparent;
-  }
-  .scrollbar-on-hover::-webkit-scrollbar {
-    /* Largura fixa: o "gutter" nunca colapsa, então o conteúdo não desloca. */
-    width: 10px;
-    height: 10px;
-    background: transparent;
-  }
-  .scrollbar-on-hover::-webkit-scrollbar-track {
-    background: transparent;
-  }
-  .scrollbar-on-hover::-webkit-scrollbar-thumb {
-    /* Invisível por padrão, ocupando o espaço. */
-    background: transparent;
-    border: 2px solid transparent;
-    background-clip: content-box;
-    border-radius: 9999px;
-  }
-  .scrollbar-on-hover:hover {
-    /* Firefox: a alça volta a ficar visível no hover (trilha transparente). */
-    scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent;
-  }
-  .scrollbar-on-hover:hover::-webkit-scrollbar {
-    width: 10px;
-    height: 10px;
-    background: transparent;
-  }
-  .scrollbar-on-hover:hover::-webkit-scrollbar-thumb {
-    background: hsl(var(--muted-foreground) / 0.35);
-    border: 2px solid transparent;
-    background-clip: content-box;
-    border-radius: 9999px;
-  }
-  .scrollbar-on-hover:hover::-webkit-scrollbar-thumb:hover {
-    background: hsl(var(--muted-foreground) / 0.55);
-    background-clip: content-box;
   }
 }
 
@@ -508,14 +491,16 @@
 }
 
 /* ------------------------------------------------------------------------- */
-/* Barras de rolagem: trilha (background) transparente em todo o app.          */
-/* Mantém apenas a "alça" (thumb) visível, pareada e discreta, para não        */
-/* "sujar" os painéis com uma faixa de fundo. Vale para Chrome/Edge/Safari    */
-/* (WebKit/Blink) e Firefox. A utility `.no-scrollbar` continua escondendo    */
-/* totalmente a barra onde for usada.                                         */
+/* Barras de rolagem: visual "slim" e discreto. Trilha transparente e alça     */
+/* arredondada/translúcida, que ganha contraste ao passar o mouse sobre a área */
+/* rolável e ao arrastar. Vale para Chrome/Edge/Safari (WebKit/Blink) e        */
+/* Firefox. A utility `.no-scrollbar` continua escondendo totalmente a barra   */
+/* onde for usada.                                                             */
 /* ------------------------------------------------------------------------- */
 * {
-  scrollbar-color: hsl(var(--muted-foreground) / 0.35) transparent; /* Firefox */
+  /* Firefox: barra fina, com alça/trilha translúcidas. */
+  scrollbar-width: thin;
+  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
 }
 ::-webkit-scrollbar {
   width: 10px;
@@ -535,14 +520,25 @@
   height: 0;
 }
 ::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.35);
+  /* Borda transparente + `content-box`: a alça fica mais fina que a barra, com */
+  /* um respiro entre ela e a trilha (visual "slim").                          */
+  background: hsl(var(--muted-foreground) / 0.3);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 9999px;
+  transition: background-color 0.18s ease;
 }
+/* Realce discreto enquanto o mouse está sobre a área rolável (overlay). */
+:hover::-webkit-scrollbar-thumb {
+  background: hsl(var(--muted-foreground) / 0.5);
+}
+/* Alça sob o cursor. */
 ::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.55);
-  background-clip: content-box;
+  background: hsl(var(--muted-foreground) / 0.65);
+}
+/* Alça sendo arrastada. */
+::-webkit-scrollbar-thumb:active {
+  background: hsl(var(--muted-foreground) / 0.8);
 }
 
 /* ------------------------------------------------------------------------- */

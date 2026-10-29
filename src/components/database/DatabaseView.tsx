@@ -21,6 +21,7 @@ import {
 } from "@dnd-kit/modifiers";
 import type {
   CSSProperties,
+  DragEvent as ReactDragEvent,
   FocusEvent as ReactFocusEvent,
   MouseEvent as ReactMouseEvent,
   PointerEvent as ReactPointerEvent,
@@ -101,6 +102,14 @@ import {
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import type { NewDatabaseInput } from "@/components/database/DatabasesScreen";
 import type { NewProjectInput } from "@/components/database/ProjectsScreen";
 import { ProjectsSidebar } from "@/components/database/ProjectsSidebar";
@@ -115,6 +124,8 @@ import {
   StatusCategoryTabs,
 } from "@/components/database/SelectOptionsPopover";
 import { TableSettingsPopover } from "@/components/database/TableSettingsPopover";
+import { OptionColorPopover } from "@/components/database/OptionColorPopover";
+import { markOptionDrag, moveOption, OPTION_DROP_BAR } from "@/components/database/option-dnd";
 import {
   ACTIONS_COLUMN_WIDTH,
   applyVisibleColumnOrder,
@@ -202,12 +213,15 @@ import {
   EMPTY_FILTER_VALUES,
   VIEW_TYPES,
   initialViews,
+  loadPageLayout,
   loadPersistedViews,
   newViewId,
+  savePageLayout,
   savePersistedViews,
   viewTypeMeta,
   type DbView,
   type DbViewType,
+  type PageLayout,
   type PersistedViews,
 } from "@/components/database/database-views";
 import {
@@ -257,7 +271,6 @@ import {
   updateRowPositions,
   updateRowValues,
   DEFAULT_PROJECT_NAME,
-  EMPTY_OPEN_DATABASES,
   createRowAtEnd,
   fetchRowById,
   fetchDatabaseById,
@@ -312,6 +325,7 @@ import {
  *   - PageTemplateDialog.tsx    (modelos de página)
  *   - SelectOptionsPopover.tsx  (editores de opções Seleção/Status)
  *   - TableSettingsPopover.tsx  (configurações da tabela)
+ *   - AutomationsPanel.tsx      (automações do database, no popover de configurações)
  */
 
 /**
@@ -769,11 +783,20 @@ function DatabaseTable({
    * popover "Editar propriedade", para colunas do tipo seleção).
    */
   const [openSelectOptions, setOpenSelectOptions] = useState<string | null>(null);
+  /**
+   * Opção sendo arrastada no menu de uma célula (select/multi_select) para
+   * reordenar as opções da coluna. Guarda a coluna e a opção de origem.
+   */
+  const [optionDrag, setOptionDrag] = useState<{
+    columnId: string;
+    optionId: string;
+  } | null>(null);
+  /** Opção sob o cursor (destino do arraste) no menu da célula. */
+  const [optionOver, setOptionOver] = useState<string | null>(null);
   /** Posicionamento (abre para baixo/cima e esquerda/direita) dos submenus internos. */
   const numberFormatMenuFlip = useFlipPopover<HTMLDivElement>();
   const decimalsMenuFlip = useFlipPopover<HTMLDivElement>();
   const calcMenuFlip = useFlipPopover<HTMLDivElement>();
-  const iconPickerFlip = useFlipPopover<HTMLDivElement>();
   /**
    * Editor de propriedade do cabeçalho (aberto pelo botão "+" e pelo clique na
    * propriedade). É posicionado com `position: fixed` a partir do cabeçalho da
@@ -826,6 +849,9 @@ function DatabaseTable({
   const [openRowPage, setOpenRowPage] = useState<string | null>(null);
   /** Ids das linhas marcadas pelo checkbox da coluna de seleção (gutter). */
   const [selectedRowIds, setSelectedRowIds] = useState<Set<string>>(new Set());
+  /** Modal de confirmação para excluir as linhas marcadas. */
+  const [confirmDeleteSelectedOpen, setConfirmDeleteSelectedOpen] =
+    useState(false);
   /** Id da linha sendo arrastada pela alça (reordenação). */
   const [draggingRowId, setDraggingRowId] = useState<string | null>(null);
   /** Id da linha antes da qual o item arrastado será solto (null = no fim). */
@@ -1081,6 +1107,10 @@ function DatabaseTable({
   /** Largura (px) de preview durante o arraste de redimensionamento de uma coluna. */
   const [resizing, setResizing] = useState<{ columnId: string; width: number } | null>(
     null,
+  );
+  /** Como a página de um item é aberta (preferência por database). */
+  const [pageLayout, setPageLayout] = useState<PageLayout>(() =>
+    loadPageLayout(viewId),
   );
   /** Visualizações criadas pelo usuário sobre este database (tabela/kanban). */
   const [views, setViews] = useState<DbView[]>(
@@ -1346,6 +1376,11 @@ function DatabaseTable({
     });
   }, [viewId, views, activeViewId, kanbanColumnId]);
 
+  /** Persiste como a página do item é aberta (preferência por database). */
+  useEffect(() => {
+    savePageLayout(viewId, pageLayout);
+  }, [viewId, pageLayout]);
+
   /** Nem todas as abas cabem: o botão "Mais" é exibido no lugar do "+". */
   const viewsCollapsed = visibleViewCount < views.length;
 
@@ -1457,6 +1492,24 @@ function DatabaseTable({
     function handlePointerDown(event: PointerEvent) {
       const target = event.target as HTMLElement | null;
       if (!target) return;
+
+      // Popover/editor da célula (seleção, seleção múltipla, relação): fecha ao
+      // clicar em qualquer lugar FORA dele — inclusive em gatilhos do cabeçalho,
+      // que abrem os próprios menus (por isso este trecho vem ANTES da lista de
+      // "não feche" abaixo). O próprio popover e o gatilho da célula ficam de
+      // fora: o clique neles é tratado pelos seus `onClick`.
+      const insideCell =
+        target.closest("[data-cell-menu-trigger]") ||
+        target.closest("[data-cell-menu]") ||
+        target.closest("[data-cell-editor]") ||
+        target.closest("[data-relation-cell-trigger]") ||
+        target.closest("[data-relation-cell-popover]") ||
+        target.closest("[data-option-color-popover]");
+      if (!insideCell) {
+        setOpenCell(null);
+        setRelationCellPos(null);
+      }
+
       if (
         target.closest("[data-column-editor-trigger]") ||
         target.closest("[data-column-editor]") ||
@@ -1477,10 +1530,7 @@ function DatabaseTable({
         target.closest("[data-select-options-trigger]") ||
         target.closest("[data-select-options]") ||
         target.closest("[data-option-color-palette]") ||
-        target.closest("[data-cell-menu-trigger]") ||
-        target.closest("[data-cell-menu]") ||
-        target.closest("[data-relation-cell-trigger]") ||
-        target.closest("[data-relation-cell-popover]") ||
+        target.closest("[data-option-color-popover]") ||
         target.closest("[data-views-menu-trigger]") ||
         target.closest("[data-views-menu]") ||
         target.closest("[data-filter-trigger]") ||
@@ -1501,8 +1551,6 @@ function DatabaseTable({
       setOpenDecimalsMenu(null);
       setOpenCalcMenu(null);
       setOpenIconPicker(null);
-      setOpenCell(null);
-      setRelationCellPos(null);
       setViewsMenuOpen(false);
       setIsFilterOpen(false);
       setIsFilterBarOpen(false);
@@ -2399,6 +2447,34 @@ function DatabaseTable({
   }
 
   /**
+   * Exclui todas as linhas marcadas na gutter. Reaproveita `onDeleteRow` (uma
+   * chamada por linha, como o botão de excluir da própria linha) e limpa a
+   * seleção. A lista carregada é atualizada na hora; o wrapper cuida do banco e
+   * dos caches de relação.
+   */
+  function removeSelectedRows() {
+    const ids = new Set(selectedRowIds);
+    if (ids.size === 0) return;
+    const removed = tableRows.filter((r) => ids.has(r.id));
+    patchTableRows((prevRows) => prevRows.filter((r) => !ids.has(r.id)));
+    // Referências a estas linhas passam a exibir "linha removida".
+    invalidateRelatedRows(Array.from(ids));
+    // Rodapé ("Calcular") recalcula com as linhas restantes.
+    setDataRevision((r) => r + 1);
+    setSelectedRowIds(new Set());
+    // Em erro, reinsere as linhas na lista carregada (o wrapper não tem a lista).
+    void Promise.all(
+      removed.map((row) => Promise.resolve(onDeleteRow(databaseId, row.id, row))),
+    ).catch(() => {
+      patchTableRows((prevRows) => {
+        const existing = new Set(prevRows.map((r) => r.id));
+        return [...prevRows, ...removed.filter((r) => !existing.has(r.id))];
+      });
+      setDataRevision((r) => r + 1);
+    });
+  }
+
+  /**
    * Cria uma nova visualização do database (do tipo escolhido no menu "+"),
    * dá um nome único ("Tabela 2", "Kanban 2"...) e a ativa em seguida.
    */
@@ -2580,6 +2656,18 @@ function DatabaseTable({
     return option;
   }
 
+  /**
+   * Troca a cor de uma opção de uma coluna de seleção (select/multi_select) e
+   * persiste na definição da coluna — as opções vivem em `column.options`.
+   */
+  function updateOptionColor(column: Column, optionId: string, color: string) {
+    updateColumn(column.id, {
+      options: editableOptionsForColumn(column).map((o) =>
+        o.id === optionId ? { ...o, color } : o,
+      ),
+    });
+  }
+
   /** Cria a opção digitada no menu da célula e já a aplica (select/multi_select). */
   function createOptionFromCell(row: DbRow, column: Column) {
     const option = createOptionForColumn(column, newOptionText);
@@ -2595,6 +2683,78 @@ function DatabaseTable({
       updateCell(row.id, column.id, option.id);
       setOpenCell(null);
     }
+  }
+
+  /**
+   * Prévia da opção que está sendo digitada no campo da célula
+   * (select/multi_select): devolve a opção "fantasma" (rótulo + próxima cor da
+   * paleta) ou `null` quando o campo está vazio ou já existe opção com o mesmo
+   * rótulo — nesse caso não há nada a criar.
+   */
+  function cellOptionPreview(column: Column): SelectOption | null {
+    const label = newOptionText.trim();
+    if (!label) return null;
+    const options = optionsForColumn(column);
+    if (options.some((o) => o.label.toLowerCase() === label.toLowerCase())) {
+      return null;
+    }
+    return {
+      id: "preview",
+      label,
+      color: OPTION_COLORS[options.length % OPTION_COLORS.length],
+    };
+  }
+
+  /** Inicia o arraste de uma opção no menu da célula (reordenação). */
+  function startOptionDrag(
+    columnId: string,
+    optionId: string,
+    event: ReactDragEvent<HTMLElement>,
+  ) {
+    setOptionDrag({ columnId, optionId });
+    setOptionOver(null);
+    markOptionDrag(event, optionId);
+  }
+
+  /** Encerra o arraste de opção (limpa o estado). */
+  function endOptionDrag() {
+    setOptionDrag(null);
+    setOptionOver(null);
+  }
+
+  /**
+   * Solta a opção arrastada na posição de `toId`, persistindo a nova ordem das
+   * opções da coluna.
+   */
+  function dropOption(column: Column, toId: string) {
+    if (optionDrag && optionDrag.columnId === column.id) {
+      const next = moveOption(
+        optionsForColumn(column),
+        optionDrag.optionId,
+        toId,
+      );
+      if (next) updateColumn(column.id, { options: next });
+    }
+    endOptionDrag();
+  }
+
+  /** Props da linha de opção que recebe o "solta aqui" (menu da célula). */
+  function optionDropProps(column: Column, optionId: string) {
+    const dragging = optionDrag?.columnId === column.id;
+    return {
+      onDragOver: (event: ReactDragEvent<HTMLElement>) => {
+        if (!dragging) return;
+        // Necessário para permitir o "drop" nesta linha.
+        event.preventDefault();
+        setOptionOver(optionId);
+      },
+      onDrop: (event: ReactDragEvent<HTMLElement>) => {
+        if (!dragging) return;
+        event.preventDefault();
+        event.stopPropagation();
+        dropOption(column, optionId);
+      },
+    };
   }
 
 
@@ -2620,61 +2780,136 @@ function DatabaseTable({
       const options = optionsForColumn(column);
       const current = options.find((o) => o.id === value) ?? null;
       const cellKey = `${row.id}:${column.id}`;
+      /** Prévia da opção sendo digitada (mostrada no rodapé do popover). */
+      const preview = cellOptionPreview(column);
+      /** Opções filtradas pelo texto digitado no campo da célula. */
+      const query = newOptionText.trim().toLowerCase();
+      const visibleOptions = query
+        ? options.filter((o) => o.label.toLowerCase().includes(query))
+        : options;
       return (
         <td
-          className="relative cursor-pointer px-3 py-1.5"
+          className={cn(
+            "relative cursor-pointer",
+            openCell === cellKey ? "p-0" : "px-3 py-1.5",
+          )}
           onClick={(e) =>
             cellAreaClick(e, () =>
               setOpenCell(openCell === cellKey ? null : cellKey),
             )
           }
         >
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              data-cell-menu-trigger
-              onClick={() => setOpenCell(openCell === cellKey ? null : cellKey)}
-              className="flex w-full items-center gap-1 overflow-hidden rounded pl-1 pr-2 py-1"
+          {openCell === cellKey ? (
+            // Editor aberto: a célula vira o topo do painel do popover e mostra
+            // a opção atual, com um "x" para limpar a seleção.
+            // Sem `border-t` de propósito: a borda de cima somaria 1px e a linha
+            // aumentaria de altura ao abrir a célula (a linha de cima já traz o
+            // traço, então o visual não muda).
+            <div
+              data-cell-editor
+              className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5"
             >
               {current ? (
-                <Chip option={current} />
+                <span className="flex-none">
+                  <Chip
+                    option={current}
+                    onRemove={() => updateCell(row.id, column.id, "")}
+                  />
+                </span>
               ) : null}
-            </button>
-            {openPageButton}
-          </div>
+              {/* Campo de criar opção ao lado da opção selecionada. */}
+              <input
+                value={newOptionText}
+                onChange={(e) => setNewOptionText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    createOptionFromCell(row, column);
+                  }
+                }}
+                aria-label={`Criar nova opção em ${column.name}`}
+                autoFocus
+                className="min-w-0 flex-1 bg-transparent px-1 py-1 text-sm outline-none"
+              />
+              {openPageButton}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                data-cell-menu-trigger
+                onClick={() => setOpenCell(openCell === cellKey ? null : cellKey)}
+                className="flex w-full items-center gap-1 overflow-hidden rounded pl-1 pr-2 py-1"
+              >
+                {current ? <Chip option={current} /> : null}
+              </button>
+              {openPageButton}
+            </div>
+          )}
           {openCell === cellKey ? (
             <div
               data-cell-menu
-              className="absolute left-3 top-full z-20 w-48 rounded-md border bg-popover p-1 shadow-md"
+              className="absolute left-0 top-full z-20 w-full rounded-b-md border-x border-b bg-popover p-1 shadow-md"
             >
-              {options.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => {
-                    updateCell(row.id, column.id, opt.id);
-                    setOpenCell(null);
-                  }}
-                  className="flex w-full items-center rounded px-2 py-1.5 text-left hover:bg-accent"
-                >
-                  <Chip option={opt} />
-                </button>
-              ))}
-              <div className="mt-1 border-t pt-1">
-                <input
-                  value={newOptionText}
-                  onChange={(e) => setNewOptionText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      createOptionFromCell(row, column);
-                    }
-                  }}
-                  placeholder="Criar opção…"
-                  aria-label={`Criar nova opção em ${column.name}`}
-                  className="w-full rounded bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus:bg-accent"
-                />
+              {/* Lista com altura máxima: mantém o menu compacto mesmo com
+                  muitas opções. */}
+              <div className="max-h-64 overflow-y-auto">
+                {visibleOptions.map((opt) => (
+                  <div
+                    key={opt.id}
+                    {...optionDropProps(column, opt.id)}
+                    className={cn(
+                      "relative flex items-center gap-1 rounded",
+                      // Barra indicadora da posição de inserção (sem borda).
+                      optionOver === opt.id &&
+                        optionDrag?.optionId &&
+                        optionDrag.optionId !== opt.id &&
+                        OPTION_DROP_BAR,
+                      optionDrag?.optionId === opt.id && "opacity-50",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      draggable
+                      onDragStart={(e) => startOptionDrag(column.id, opt.id, e)}
+                      onDragEnd={endOptionDrag}
+                      aria-label={`Reordenar opção ${opt.label}`}
+                      title="Arrastar para reordenar"
+                      className="flex h-6 w-4 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
+                    >
+                      <GripVertical className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        updateCell(row.id, column.id, opt.id);
+                        setOpenCell(null);
+                      }}
+                      className="flex min-w-0 flex-1 items-center rounded px-1 py-1.5 text-left hover:bg-accent"
+                    >
+                      <Chip option={opt} />
+                    </button>
+                    {/* Seta: abre o popover de cores nomeadas desta opção. */}
+                    <OptionColorPopover
+                      option={opt}
+                      onSelect={(color) => updateOptionColor(column, opt.id, color)}
+                    />
+                  </div>
+                ))}
               </div>
+              {/* Prévia da opção sendo digitada na célula: "Criar" + chip. */}
+              {preview ? (
+                <div className="mt-1 flex items-center gap-1 border-t pt-1">
+                  <button
+                    type="button"
+                    onClick={() => createOptionFromCell(row, column)}
+                    className="flex-none rounded px-2 py-1 text-xs font-medium text-primary hover:bg-accent"
+                  >
+                    Criar
+                  </button>
+                  <Chip option={preview} />
+                </div>
+              ) : null}
             </div>
           ) : null}
         </td>
@@ -2685,64 +2920,144 @@ function DatabaseTable({
       const options = optionsForColumn(column);
       const list = Array.isArray(value) ? value : [];
       const cellKey = `${row.id}:${column.id}`;
+      /** Prévia da opção sendo digitada (mostrada no rodapé do popover). */
+      const preview = cellOptionPreview(column);
+      /** Opções filtradas pelo texto digitado no campo da célula. */
+      const query = newOptionText.trim().toLowerCase();
+      const visibleOptions = query
+        ? options.filter((o) => o.label.toLowerCase().includes(query))
+        : options;
       return (
         <td
-          className="relative cursor-pointer px-3 py-1.5"
+          className={cn(
+            "relative cursor-pointer",
+            openCell === cellKey ? "p-0" : "px-3 py-1.5",
+          )}
           onClick={(e) =>
             cellAreaClick(e, () =>
               setOpenCell(openCell === cellKey ? null : cellKey),
             )
           }
         >
-          <div className="flex items-center gap-1">
-            <button
-              type="button"
-              data-cell-menu-trigger
-              onClick={() => setOpenCell(openCell === cellKey ? null : cellKey)}
-              className="flex w-full flex-nowrap items-center gap-1 overflow-hidden rounded pl-1 pr-2 py-1"
+          {openCell === cellKey ? (
+            // Editor aberto: a célula vira o topo do painel do popover e mostra
+            // as opções selecionadas, cada uma com um "x" para remover.
+            // Sem `border-t` de propósito: a borda de cima somaria 1px e a linha
+            // aumentaria de altura ao abrir a célula (a linha de cima já traz o
+            // traço, então o visual não muda).
+            <div
+              data-cell-editor
+              className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5"
             >
-              {list.length === 0 ? null : (
-                list.map((optId) => {
-                  const opt = options.find((o) => o.id === optId) ?? tagById(optId);
-                  return opt ? <Chip key={optId} option={opt} /> : null;
-                })
-              )}
-            </button>
-            {openPageButton}
-          </div>
+              {list.map((optId) => {
+                const opt = options.find((o) => o.id === optId) ?? tagById(optId);
+                return opt ? (
+                  <span key={optId} className="flex-none">
+                    <Chip
+                      option={opt}
+                      onRemove={() => toggleTag(row, column.id, optId)}
+                    />
+                  </span>
+                ) : null;
+              })}
+              {/* Campo de criar opção ao lado das opções selecionadas. */}
+              <input
+                value={newOptionText}
+                onChange={(e) => setNewOptionText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    createOptionFromCell(row, column);
+                  }
+                }}
+                aria-label={`Criar nova opção em ${column.name}`}
+                autoFocus
+                className="min-w-0 flex-1 bg-transparent px-1 py-1 text-sm outline-none"
+              />
+              {openPageButton}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                data-cell-menu-trigger
+                onClick={() => setOpenCell(openCell === cellKey ? null : cellKey)}
+                className="flex w-full flex-nowrap items-center gap-1 overflow-hidden rounded pl-1 pr-2 py-1"
+              >
+                {list.length === 0 ? null : (
+                  list.map((optId) => {
+                    const opt = options.find((o) => o.id === optId) ?? tagById(optId);
+                    return opt ? <Chip key={optId} option={opt} /> : null;
+                  })
+                )}
+              </button>
+              {openPageButton}
+            </div>
+          )}
           {openCell === cellKey ? (
             <div
               data-cell-menu
-              className="absolute left-3 top-full z-20 mt-1 w-48 rounded-md border bg-popover p-1 shadow-md"
+              className="absolute left-0 top-full z-20 w-full rounded-b-md border-x border-b bg-popover p-1 shadow-md"
             >
-              {options.map((opt) => (
-                <button
-                  key={opt.id}
-                  type="button"
-                  onClick={() => toggleTag(row, column.id, opt.id)}
-                  className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left hover:bg-accent"
-                >
-                  <Chip option={opt} />
-                  {list.includes(opt.id) ? (
-                    <span className="text-xs text-primary">selecionado</span>
-                  ) : null}
-                </button>
-              ))}
-              <div className="mt-1 border-t pt-1">
-                <input
-                  value={newOptionText}
-                  onChange={(e) => setNewOptionText(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      createOptionFromCell(row, column);
-                    }
-                  }}
-                  placeholder="Criar opção…"
-                  aria-label={`Criar nova opção em ${column.name}`}
-                  className="w-full rounded bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-muted-foreground focus:bg-accent"
-                />
+              {/* Lista com altura máxima: mantém o menu compacto mesmo com
+                  muitas opções. */}
+              <div className="max-h-64 overflow-y-auto">
+                {visibleOptions.map((opt) => (
+                  <div
+                    key={opt.id}
+                    {...optionDropProps(column, opt.id)}
+                    className={cn(
+                      "relative flex items-center gap-1 rounded",
+                      // Barra indicadora da posição de inserção (sem borda).
+                      optionOver === opt.id &&
+                        optionDrag?.optionId &&
+                        optionDrag.optionId !== opt.id &&
+                        OPTION_DROP_BAR,
+                      optionDrag?.optionId === opt.id && "opacity-50",
+                    )}
+                  >
+                    <button
+                      type="button"
+                      draggable
+                      onDragStart={(e) => startOptionDrag(column.id, opt.id, e)}
+                      onDragEnd={endOptionDrag}
+                      aria-label={`Reordenar opção ${opt.label}`}
+                      title="Arrastar para reordenar"
+                      className="flex h-6 w-4 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
+                    >
+                      <GripVertical className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => toggleTag(row, column.id, opt.id)}
+                      className="flex min-w-0 flex-1 items-center justify-between rounded px-1 py-1.5 text-left hover:bg-accent"
+                    >
+                      <Chip option={opt} />
+                      {list.includes(opt.id) ? (
+                        <span className="text-xs text-primary">selecionado</span>
+                      ) : null}
+                    </button>
+                    {/* Seta: abre o popover de cores nomeadas desta opção. */}
+                    <OptionColorPopover
+                      option={opt}
+                      onSelect={(color) => updateOptionColor(column, opt.id, color)}
+                    />
+                  </div>
+                ))}
               </div>
+              {/* Prévia da opção sendo digitada na célula: "Criar" + chip. */}
+              {preview ? (
+                <div className="mt-1 flex items-center gap-1 border-t pt-1">
+                  <button
+                    type="button"
+                    onClick={() => createOptionFromCell(row, column)}
+                    className="flex-none rounded px-2 py-1 text-xs font-medium text-primary hover:bg-accent"
+                  >
+                    Criar
+                  </button>
+                  <Chip option={preview} />
+                </div>
+              ) : null}
             </div>
           ) : null}
         </td>
@@ -3172,7 +3487,7 @@ function DatabaseTable({
                   <div
                     data-icon-picker
                     role="menu"
-                    className="absolute left-0 top-full z-50 mt-1 w-56 rounded-md border bg-popover p-2 shadow-md"
+                    className="absolute left-0 top-full z-50 mt-1 max-h-[60vh] w-64 overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
                   >
                     <button
                       type="button"
@@ -4169,20 +4484,40 @@ function DatabaseTable({
                     ao menos uma linha selecionada), alinhado à direita para casar
                     com o checkbox das linhas. */}
                 <th className="border-b px-1 py-2">
-                  <div className="flex items-center justify-end">
+                  <div className="flex items-center justify-end gap-1.5">
                     {selectedRowIds.size > 0 ? (
-                      <input
-                        type="checkbox"
-                        checked={selectedRowIds.size === tableRows.length}
-                        ref={(el) => {
-                          if (el) {
-                            el.indeterminate = selectedRowIds.size < tableRows.length;
-                          }
-                        }}
-                        onChange={toggleAllRowsSelection}
-                        aria-label="Selecionar todas as linhas"
-                        className="h-4 w-4 cursor-pointer rounded border-input accent-primary"
-                      />
+                      <>
+                        {/* Contador de linhas marcadas. */}
+                        <span
+                          aria-live="polite"
+                          className="text-[11px] font-medium tabular-nums text-muted-foreground"
+                        >
+                          {selectedRowIds.size}
+                        </span>
+                        {/* Excluir as linhas marcadas (pede confirmação). */}
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteSelectedOpen(true)}
+                          aria-label="Excluir linhas selecionadas"
+                          title="Excluir linhas selecionadas"
+                          className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                        <input
+                          type="checkbox"
+                          checked={selectedRowIds.size === tableRows.length}
+                          ref={(el) => {
+                            if (el) {
+                              el.indeterminate =
+                                selectedRowIds.size < tableRows.length;
+                            }
+                          }}
+                          onChange={toggleAllRowsSelection}
+                          aria-label="Selecionar todas as linhas"
+                          className="h-4 w-4 cursor-pointer rounded border-input accent-primary"
+                        />
+                      </>
                     ) : null}
                   </div>
                 </th>
@@ -4210,19 +4545,15 @@ function DatabaseTable({
                           // Cursor padrão (a mãozinha comum, igual às abas de
                           // visualização) — o arraste continua funcionando.
                           "flex w-full items-center gap-1.5 overflow-hidden rounded px-1 py-0.5 text-left",
-                          // Colunas numéricas: título alinhado à direita (como as células).
-                          column.type === "number" && "justify-end",
+                          // O título fica sempre à esquerda (inclusive nas
+                          // colunas numéricas); o que fica à direita é o valor
+                          // na célula, não o nome da propriedade.
                         )}
                         title="Editar propriedade (arraste para reordenar)"
                       >
                         <Icon className="h-3.5 w-3.5 shrink-0" />
                         <span className="min-w-0 truncate">{column.name}</span>
-                        <ChevronDown
-                          className={cn(
-                            "h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100",
-                            column.type !== "number" && "ml-auto",
-                          )}
-                        />
+                        <ChevronDown className="ml-auto h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-100" />
                       </button>
 
                       {openColumnEditor === column.id && columnEditorPos ? (
@@ -4272,11 +4603,11 @@ function DatabaseTable({
                             {openIconPicker === column.id ? (
                               <div
                                 data-icon-picker
-                                ref={iconPickerFlip.ref}
-                                className={cn(
-                                  "absolute z-40 w-56 rounded-md border bg-popover p-2 shadow-md",
-                                  iconPickerFlip.className,
-                                )}
+                                // Abre sempre para BAIXO, com altura fixa e
+                                // rolagem: a lista tem 100 ícones e, com o
+                                // flip, ela "pulava" para cima e estourava a
+                                // tela.
+                                className="absolute left-0 top-full z-40 mt-1 h-80 w-64 overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
                               >
                                 <button
                                   type="button"
@@ -4371,6 +4702,9 @@ function DatabaseTable({
                                         updateColumn(column.id, {
                                           type: option.type,
                                         });
+                                        // Fecha o menu e o editor da propriedade
+                                        // (o fluxo termina ao escolher o tipo).
+                                        setOpenColumnEditor(null);
                                         setOpenHeaderTypeMenu(null);
                                         setOpenPropEditMenu(null);
                                         setOpenNumberFormatMenu(null);
@@ -4996,37 +5330,89 @@ function DatabaseTable({
           </table>
           </div>
 
-          {/* Rodapé "Calcular" (estilo Notion): agregado de cada coluna numérica
-              configurada, fixo na base da área rolável (acima da barra de rolagem
-              horizontal). Emite as mesmas larguras do `colgroup` (gutter +
-              visíveis + ações + fantasma) para não desalinhar a grade. */}
-          {calcColumns.length > 0 ? (
+          {/* Rodapé fixo na base da área rolável (acima da barra de rolagem
+              horizontal): botão "Nova linha" + o agregado de cada coluna
+              numérica com cálculo ("Calcular"), estilo Notion. Emite as mesmas
+              larguras do `colgroup` (gutter + visíveis + ações + fantasma) para
+              não desalinhar a grade. */}
+          <div
+            className="sticky bottom-0 z-10 flex flex-none border-t bg-card"
+            style={{ width: tableWidth }}
+          >
+            {/* Adicionar linha no fim da tabela: fica na faixa do rodapé,
+                alinhado à coluna gutter (mesma faixa do "Calcular"). */}
             <div
-              className="sticky bottom-0 z-10 flex flex-none border-t bg-card"
-              style={{ width: tableWidth }}
+              className="flex items-center py-1"
+              style={{ width: ROW_GUTTER_WIDTH }}
             >
-              <div className="py-2" style={{ width: ROW_GUTTER_WIDTH }} />
-              {orderedVisibleColumns.map((column) => (
-                <div
-                  key={column.id}
-                  className={cn(
-                    "px-3 py-2 text-xs font-medium text-foreground",
-                    // Agregado de coluna numérica: alinhado à direita.
-                    column.type === "number" && "text-right",
-                  )}
-                  style={{ width: columnWidth(column) }}
-                >
-                  <span className="block truncate whitespace-nowrap">
-                    {column.calculate
-                      ? formatCalcValue(getColumnAggregate(column.id), column)
-                      : ""}
-                  </span>
-                </div>
-              ))}
-              <div className="py-2" style={{ width: ACTIONS_COLUMN_WIDTH }} />
-              <div className="py-2" style={{ width: tableSpacerWidth }} />
+              <button
+                type="button"
+                onClick={() => {
+                  void addRow(undefined, null, true);
+                }}
+                aria-label="Nova linha"
+                title="Nova linha"
+                className="flex h-6 max-w-full items-center gap-1 rounded px-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <Plus className="h-3.5 w-3.5 flex-none" />
+                <span className="truncate">Nova linha</span>
+              </button>
             </div>
-          ) : null}
+            {orderedVisibleColumns.map((column) => (
+              <div
+                key={column.id}
+                className={cn(
+                  "px-3 py-2 text-xs font-medium text-foreground",
+                  // Agregado de coluna numérica: alinhado à direita.
+                  column.type === "number" && "text-right",
+                )}
+                style={{ width: columnWidth(column) }}
+              >
+                <span className="block truncate whitespace-nowrap">
+                  {column.calculate
+                    ? formatCalcValue(getColumnAggregate(column.id), column)
+                    : ""}
+                </span>
+              </div>
+            ))}
+            <div className="py-2" style={{ width: ACTIONS_COLUMN_WIDTH }} />
+            <div className="py-2" style={{ width: tableSpacerWidth }} />
+          </div>
+
+          {/* Confirmação da exclusão em massa (botão de lixeira do cabeçalho
+              da gutter). Renderizado em portal pelo `DialogContent`. */}
+          <Dialog
+            open={confirmDeleteSelectedOpen}
+            onOpenChange={setConfirmDeleteSelectedOpen}
+          >
+            <DialogContent className="max-w-sm">
+              <DialogHeader>
+                <DialogTitle>Excluir linhas</DialogTitle>
+                <DialogDescription>
+                  {selectedRowIds.size === 1
+                    ? "Excluir 1 linha selecionada? Esta ação não pode ser desfeita."
+                    : `Excluir ${selectedRowIds.size} linhas selecionadas? Esta ação não pode ser desfeita.`}
+                </DialogDescription>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  onClick={() => setConfirmDeleteSelectedOpen(false)}
+                >
+                  Cancelar
+                </Button>
+                <Button
+                  variant="destructive"
+                  onClick={() => {
+                    setConfirmDeleteSelectedOpen(false);
+                    removeSelectedRows();
+                  }}
+                >
+                  Excluir
+                </Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
 
           {/* Prévia que segue o cursor (dnd-kit): o cabeçalho da propriedade
               arrastada ou um cartão com o título da linha arrastada. */}
@@ -5035,10 +5421,7 @@ function DatabaseTable({
               // Mesmo visual do cabeçalho em hover, ocupando **toda a largura**
               // da coluna (a célula inteira) e seguindo o cursor.
               <div
-                className={cn(
-                  "flex items-center gap-1.5 border bg-accent px-3 py-2 text-xs font-medium text-foreground shadow-lg",
-                  draggingColumn.type === "number" && "justify-end",
-                )}
+                className="flex items-center gap-1.5 border bg-accent px-3 py-2 text-xs font-medium text-foreground shadow-lg"
                 style={{
                   width: draggingColumnBox?.width ?? columnWidth(draggingColumn),
                   height: draggingColumnBox?.height,
@@ -5089,12 +5472,28 @@ function DatabaseTable({
 
       {openRow ? (
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          className={cn(
+            "inset-0 z-50 flex bg-black/40",
+            // Como a página é aberta (preferência por database):
+            // `full` fica **dentro da área do conteúdo** (a sidebar e o cabeçalho
+            // do app continuam visíveis); `center` = painel flutuante no centro;
+            // `right` = painel ancorado à direita. Os dois últimos cobrem a tela.
+            pageLayout === "full" ? "absolute" : "fixed",
+            pageLayout === "full" && "items-stretch justify-stretch p-0",
+            pageLayout === "center" && "items-center justify-center p-4",
+            pageLayout === "right" && "items-stretch justify-end p-0",
+          )}
           onClick={() => setOpenRowPage(null)}
           role="presentation"
         >
           <div
-            className="flex h-full w-full max-w-[60vw] flex-col overflow-hidden rounded-lg border bg-card shadow-xl"
+            className={cn(
+              "flex h-full w-full flex-col overflow-hidden border bg-card shadow-xl",
+              pageLayout === "full" && "rounded-none border-0",
+              pageLayout === "center" && "max-w-[60vw] rounded-lg",
+              pageLayout === "right" &&
+                "max-w-[44rem] rounded-none rounded-l-lg border-y-0 border-r-0",
+            )}
             onClick={(e) => e.stopPropagation()}
             role="dialog"
             aria-modal="true"
@@ -5171,6 +5570,8 @@ function DatabaseTable({
         }}
         activeViewType={activeView.type}
         onChangeViewType={changeViewType}
+        pageLayout={pageLayout}
+        onChangePageLayout={setPageLayout}
         chartConfig={chartConfig}
         onChangeChartConfig={updateChartConfig}
         databases={allDatabases}
@@ -5219,10 +5620,11 @@ export function DatabaseView({ userName }: { userName?: string }) {
   /**
    * Navegação entre databases abertos carregada do servidor (tabela
    * `workspace_open_databases`). É restaurada assim que a lista de databases
-   * carrega, para não abrir outro database no lugar do salvo.
+   * carrega, para não abrir outro database no lugar do salvo. `null` = sem
+   * estado salvo (primeiro uso), quando o auto-open do primeiro database vale.
    */
   const [persistedOpenDatabases, setPersistedOpenDatabases] =
-    useState<OpenDatabasesState>(EMPTY_OPEN_DATABASES);
+    useState<OpenDatabasesState | null>(null);
   /**
    * O usuário fechou a última aba: impede o auto-open de reabrir um database
    * logo em seguida (volta a valer ao abrir um database ou trocar de projeto).
@@ -5305,12 +5707,6 @@ export function DatabaseView({ userName }: { userName?: string }) {
     [databases, resolvedProjectId],
   );
 
-  // Trocar de projeto volta a permitir o auto-open (mesmo depois de o usuário
-  // fechar a última aba do projeto anterior).
-  useEffect(() => {
-    closedAllTabsRef.current = false;
-  }, [resolvedProjectId]);
-
   /*
    * Com um projeto ativo e nenhum database aberto, abre automaticamente o
    * primeiro database do projeto. Assim o Workspace não fica parado no cartão
@@ -5370,15 +5766,20 @@ export function DatabaseView({ userName }: { userName?: string }) {
     if (loading || restoredOpenDatabases) return;
     setRestoredOpenDatabases(true);
     if (pendingDatabaseRequest) return;
+    const saved = persistedOpenDatabases;
+    // Sem estado salvo (primeiro uso): deixa o auto-open abrir o primeiro
+    // database do projeto, como antes.
+    if (!saved) return;
     const known = new Set(databases.map((d) => d.id));
-    const ids = persistedOpenDatabases.ids.filter((id) => known.has(id));
+    const ids = saved.ids.filter((id) => known.has(id));
     const savedSelectedId =
-      persistedOpenDatabases.selectedId &&
-      known.has(persistedOpenDatabases.selectedId)
-        ? persistedOpenDatabases.selectedId
-        : null;
+      saved.selectedId && known.has(saved.selectedId) ? saved.selectedId : null;
     if (ids.length > 0) setOpenDatabaseIds(ids);
     if (savedSelectedId) setSelectedId(savedSelectedId);
+    // Existe estado salvo (mesmo vazio: o usuário fechou todas as abas): bloqueia
+    // o auto-open para não reabrir o primeiro database ao recarregar. O efeito
+    // de `selectedId` libera de novo assim que um database é aberto.
+    closedAllTabsRef.current = true;
     // O que foi restaurado já está no servidor: não reescreve ao abrir.
     lastSavedOpenDatabasesRef.current = JSON.stringify({
       ids,
@@ -5483,7 +5884,8 @@ export function DatabaseView({ userName }: { userName?: string }) {
           fetchProjects(),
           fetchProjectCategories(),
           // Conveniência de UI: uma falha aqui não deve derrubar o carregamento.
-          fetchOpenDatabases().catch(() => EMPTY_OPEN_DATABASES),
+          // Sem estado salvo (`null`), o auto-open do primeiro database vale.
+          fetchOpenDatabases().catch(() => null),
         ]);
         if (cancelled) return;
         setDatabases(data);
@@ -5695,7 +6097,9 @@ export function DatabaseView({ userName }: { userName?: string }) {
   const handleOpenProject = useCallback(
     (id: string) => {
       // Limpa a seleção para que o primeiro database do projeto seja aberto
-      // automaticamente (quando houver algum).
+      // automaticamente (quando houver algum). Trocar de projeto volta a
+      // permitir o auto-open, mesmo depois de o usuário fechar a última aba.
+      closedAllTabsRef.current = false;
       setSelectedId(null);
       setActiveProjectId(id);
     },
@@ -5711,6 +6115,8 @@ export function DatabaseView({ userName }: { userName?: string }) {
     (result: WorkspaceSearchResult) => {
       switch (result.kind) {
         case "project":
+          // Trocar de projeto volta a permitir o auto-open do primeiro database.
+          closedAllTabsRef.current = false;
           setSelectedId(null);
           setActiveProjectId(result.projectId);
           return;
@@ -6248,11 +6654,11 @@ export function DatabaseView({ userName }: { userName?: string }) {
   }
 
   // Com projeto ativo e nenhum database selecionado: a sidebar continua à
-  // esquerda (a lista de databases vive no popover do projeto). O cartão de
-  // criação só aparece quando o projeto **não tem nenhum** database; havendo
-  // databases, o primeiro é aberto automaticamente (efeito acima) — este ramo
-  // só é alcançado se o database aberto for excluído, mostrando a dica de
-  // escolha.
+  // esquerda (a lista de databases vive no popover do projeto). Quando o projeto
+  // **não tem nenhum** database, o cartão de criação aparece; quando tem, o
+  // primeiro é aberto automaticamente (efeito acima) — este ramo com databases
+  // só é alcançado se o usuário fechar todas as abas (ou restaurar esse estado),
+  // e mostra o cartão de "nenhum database aberto" com o seletor.
   if (!selected) {
     const projectHasDatabases = projectDatabases.length > 0;
     return (
@@ -6276,9 +6682,18 @@ export function DatabaseView({ userName }: { userName?: string }) {
           onDeleteProject={handleDeleteProject}
         />
         {projectHasDatabases ? (
-          <div className="flex min-h-0 flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
-            Escolha um database na barra lateral para abri-lo.
-          </div>
+          <WorkspaceEmptyState
+            variant="no-open-database"
+            userName={userName}
+            projectName={projects.find((p) => p.id === resolvedProjectId)?.name}
+            categories={categories}
+            databases={databases}
+            projects={projects}
+            onOpenDatabase={handleOpenDatabase}
+            onCreateProject={handleCreateProject}
+            onCreateCategory={handleCreateCategory}
+            onCreateDatabase={(input) => void handleCreate(input)}
+          />
         ) : (
           <WorkspaceEmptyState
             variant="no-database"
@@ -6316,7 +6731,10 @@ export function DatabaseView({ userName }: { userName?: string }) {
         onDeleteCategory={handleDeleteCategory}
         onDeleteProject={handleDeleteProject}
       />
-      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+      {/* Área do conteúdo (ao lado da sidebar). É `relative` para o layout
+          "Página inteira" ancorar a página do item aqui dentro, mantendo a
+          sidebar e o cabeçalho do app visíveis. */}
+      <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
         <OpenDatabaseBar
           currentDatabaseId={selected.id}
           databases={databases}

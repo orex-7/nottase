@@ -297,7 +297,10 @@ function CategoriesManagerPopover({
                 <Fragment key={name}>
                   {/* Linha indicadora da posição de inserção durante o arraste */}
                   {showLineBefore ? (
-                    <li className="h-0.5 rounded-full bg-primary" aria-hidden />
+                    <li
+                      className="h-0.5 rounded-full bg-muted-foreground"
+                      aria-hidden
+                    />
                   ) : null}
                   <li
                     className={cn("rounded", isDragging && "opacity-40")}
@@ -329,7 +332,7 @@ function CategoriesManagerPopover({
                           setDragCategory({ from: name, over: name });
                         }}
                         onDragEnd={() => setDragCategory(null)}
-                        className="flex h-7 w-4 flex-none cursor-grab items-center justify-center text-muted-foreground/60 active:cursor-grabbing"
+                        className="flex h-7 w-4 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
                       >
                         <GripVertical className="h-3.5 w-3.5" />
                       </span>
@@ -983,7 +986,7 @@ export function ProjectsSidebar({
     return (
       <aside
         ref={asideRef}
-        className="hidden shrink-0 flex-col items-center gap-2 border-r bg-background/60 p-2 md:flex"
+        className="hidden shrink-0 flex-col items-center gap-2 border-r bg-sidebar p-2 md:flex"
       >
         <button
           type="button"
@@ -1048,8 +1051,8 @@ export function ProjectsSidebar({
       onDragEnd={endProjectDrag}
       // `overflow-y-auto` (e não `scroll`): a barra só existe quando o conteúdo
       // realmente passa da altura. O `scrollbar-gutter: stable` do
-      // `.scrollbar-on-hover` mantém o espaço reservado, então nada desloca.
-      className="scrollbar-on-hover hidden w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-background/60 p-3 md:flex"
+      // `.scrollbar-stable` mantém o espaço reservado, então nada desloca.
+      className="scrollbar-stable hidden w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-sidebar p-3 md:flex"
     >
       {/* O cabeçalho e a lista avançam 12px sobre o padding/gutter da sidebar
           (`-mr-3`) para que a borda direita das linhas fique alinhada com o
@@ -1133,9 +1136,6 @@ export function ProjectsSidebar({
             const key = group.name || "__uncategorized__";
             const isGroupCollapsed = collapsedGroups.has(key);
             const groupName = group.name || null;
-            // Grupo sob o ponteiro durante o arraste (destaque + alvo do drop).
-            const isGroupDropTarget =
-              dragProject !== null && dragProject.overGroup === groupName;
 
             return (
               <section
@@ -1174,10 +1174,7 @@ export function ProjectsSidebar({
                   onReorderProjects(next);
                 }}
                 onDragEnd={endProjectDrag}
-                className={cn(
-                  "flex flex-col gap-0.5 rounded transition-colors",
-                  isGroupDropTarget && "bg-primary/5 ring-1 ring-primary/30",
-                )}
+                className="flex flex-col gap-0.5 rounded transition-colors"
               >
                 {group.name ? (
                   <button
@@ -1195,7 +1192,7 @@ export function ProjectsSidebar({
                     />
                     <span className={cn("h-2.5 w-2.5 flex-none rounded-full", group.color)} />
                     <span className="min-w-0 flex-1 truncate">{group.name}</span>
-                    <span className="flex-none text-muted-foreground/70">
+                    <span className="flex-none text-faint-foreground">
                       {group.items.length}
                     </span>
                   </button>
@@ -1203,7 +1200,7 @@ export function ProjectsSidebar({
                   <div className="flex items-center gap-1.5 px-1 py-0.5 text-[11px] uppercase tracking-wide text-muted-foreground">
                     <span className={cn("h-2.5 w-2.5 flex-none rounded-full", group.color)} />
                     <span className="min-w-0 flex-1 truncate">Sem categoria</span>
-                    <span className="flex-none text-muted-foreground/70">
+                    <span className="flex-none text-faint-foreground">
                       {group.items.length}
                     </span>
                   </div>
@@ -1271,14 +1268,17 @@ export function ProjectsSidebar({
                           onDragEnd={endProjectDrag}
                           className={cn(
                             "relative",
+                            // Indicador de inserção: NEUTRO (sem vermelho).
                             isDropTarget &&
-                              "before:absolute before:-top-0.5 before:left-1 before:right-1 before:h-0.5 before:rounded-full before:bg-primary",
+                              "before:absolute before:-top-0.5 before:left-1 before:right-1 before:h-0.5 before:rounded-full before:bg-muted-foreground",
                           )}
                         >
                           <div
                             className={cn(
                               "group relative flex items-center rounded hover:bg-accent",
-                              isActive && "bg-primary/10",
+                              // Item selecionado: fundo de "seleção" (vermelho
+                              // bem sutil) com o texto em quase branco.
+                              isActive && "bg-selection",
                               optionsOpen && "bg-accent",
                               isDragging && "opacity-50",
                             )}
@@ -1324,7 +1324,7 @@ export function ProjectsSidebar({
                               title={project.name}
                               className={cn(
                                 "flex min-w-0 flex-1 items-center gap-2 rounded py-1.5 pl-6 pr-6 text-left text-sm",
-                                isActive && "font-medium text-primary",
+                                isActive && "font-medium text-foreground",
                               )}
                             >
                               <span className="min-w-0 flex-1 truncate">{project.name}</span>

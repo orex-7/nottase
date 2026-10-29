@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   copyPersistedViews,
+  loadPageLayout,
   loadPersistedViews,
+  savePageLayout,
   savePersistedViews,
 } from "./database-views";
 
@@ -37,5 +39,41 @@ describe("copyPersistedViews", () => {
   it("não cria nada quando a origem não tem visualizações salvas", () => {
     copyPersistedViews(SOURCE, TARGET);
     expect(loadPersistedViews(TARGET)).toBeNull();
+  });
+});
+
+describe("preferência de abertura da página", () => {
+  beforeEach(() => {
+    window.localStorage.clear();
+  });
+
+  it("usa 'center' por padrão", () => {
+    expect(loadPageLayout("db1")).toBe("center");
+  });
+
+  it("guarda e relê a escolha por database", () => {
+    savePageLayout("db1", "right");
+    savePageLayout("db2", "full");
+
+    expect(loadPageLayout("db1")).toBe("right");
+    expect(loadPageLayout("db2")).toBe("full");
+  });
+
+  it("ignora valor inválido salvo", () => {
+    window.localStorage.setItem("calendar:dbPageLayout:db1", "diagonal");
+    expect(loadPageLayout("db1")).toBe("center");
+  });
+
+  it("a cópia do database também herda a abertura da página", () => {
+    savePersistedViews(SOURCE, {
+      views: [{ id: "v1", type: "table", name: "Tabela" }],
+      activeViewId: "v1",
+      kanbanColumnId: null,
+    });
+    savePageLayout(SOURCE, "right");
+
+    copyPersistedViews(SOURCE, TARGET);
+
+    expect(loadPageLayout(TARGET)).toBe("right");
   });
 });

@@ -28,6 +28,50 @@ export function newViewId(): string {
   return `view_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
 }
 
+/**
+ * Como a página de um item é aberta na tabela (layout do painel).
+ * - `full`: ocupa a área do conteúdo (a sidebar e o cabeçalho do app continuam
+ *   visíveis);
+ * - `center`: painel flutuante centralizado (padrão);
+ * - `right`: painel ancorado à direita da tela.
+ */
+export type PageLayout = "full" | "center" | "right";
+
+/** Opções oferecidas no seletor "Abertura da página" (seção Layout). */
+export const PAGE_LAYOUTS: { layout: PageLayout; label: string }[] = [
+  { layout: "full", label: "Página inteira" },
+  { layout: "center", label: "Centralizada" },
+  { layout: "right", label: "À direita" },
+];
+
+/** Chave de localStorage da preferência de abertura da página (por database). */
+function pageLayoutStorageKey(databaseId: string): string {
+  return `calendar:dbPageLayout:${databaseId}`;
+}
+
+/** Lê a preferência de abertura da página (padrão: centralizada). */
+export function loadPageLayout(databaseId: string): PageLayout {
+  if (typeof window === "undefined") return "center";
+  try {
+    const raw = window.localStorage.getItem(pageLayoutStorageKey(databaseId));
+    return raw === "full" || raw === "right" || raw === "center"
+      ? raw
+      : "center";
+  } catch {
+    return "center";
+  }
+}
+
+/** Persiste a preferência de abertura da página (best-effort). */
+export function savePageLayout(databaseId: string, layout: PageLayout): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(pageLayoutStorageKey(databaseId), layout);
+  } catch {
+    /* ignora falhas de quota/privacidade — a UI segue com o estado em memória */
+  }
+}
+
 /** Referências vazias estáveis (evitam recriar arrays/objetos a cada render). */
 export const EMPTY_FILTER_IDS: string[] = [];
 export const EMPTY_FILTER_VALUES: Record<string, string> = {};
@@ -160,8 +204,16 @@ export function copyPersistedViews(
   if (typeof window === "undefined") return;
   try {
     const raw = window.localStorage.getItem(viewsStorageKey(fromDatabaseId));
-    if (!raw) return;
-    window.localStorage.setItem(viewsStorageKey(toDatabaseId), raw);
+    if (raw) {
+      window.localStorage.setItem(viewsStorageKey(toDatabaseId), raw);
+    }
+    // A cópia também herda como a página do item é aberta.
+    const layout = window.localStorage.getItem(
+      pageLayoutStorageKey(fromDatabaseId),
+    );
+    if (layout) {
+      window.localStorage.setItem(pageLayoutStorageKey(toDatabaseId), layout);
+    }
   } catch {
     /* ignora falhas de quota/privacidade */
   }

@@ -144,7 +144,7 @@ export function CalendarSidebar({
   // Estado minimizado: rail estreito apenas com os controles essenciais.
   if (collapsed) {
     return (
-      <aside className="hidden shrink-0 flex-col items-center gap-2 border-r bg-background/60 p-2 md:flex">
+      <aside className="hidden shrink-0 flex-col items-center gap-2 border-r bg-sidebar p-2 md:flex">
         <button
           type="button"
           onClick={toggleCollapsed}
@@ -168,7 +168,7 @@ export function CalendarSidebar({
   }
 
   return (
-    <aside className="hidden w-64 shrink-0 flex-col gap-3 border-r bg-background/60 p-3 md:flex">
+    <aside className="hidden w-64 shrink-0 flex-col gap-3 border-r bg-sidebar p-3 md:flex">
       {/* Mini-calendário do mês atual */}
       <section className="rounded-lg border bg-card p-2 shadow-sm">
         <header className="mb-1 flex items-center justify-between px-1">

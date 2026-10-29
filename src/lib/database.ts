@@ -813,12 +813,6 @@ export interface OpenDatabasesState {
   selectedId: string | null;
 }
 
-/** Estado vazio da navegação (usuário sem linha salva). */
-export const EMPTY_OPEN_DATABASES: OpenDatabasesState = {
-  ids: [],
-  selectedId: null,
-};
-
 interface WorkspaceOpenDatabasesDbRow {
   database_ids: unknown;
   selected_id: string | null;
@@ -826,16 +820,18 @@ interface WorkspaceOpenDatabasesDbRow {
 
 /**
  * Lê a navegação salva do usuário autenticado (a RLS limita à própria linha).
- * Sem linha salva (primeiro uso), devolve o estado vazio.
+ * Sem linha salva (primeiro uso), devolve `null` — assim o chamador distingue
+ * "nunca salvo" (pode auto-abrir o primeiro database) de "salvo vazio" (o
+ * usuário fechou todas as abas e o estado deve ser respeitado).
  */
-export async function fetchOpenDatabases(): Promise<OpenDatabasesState> {
+export async function fetchOpenDatabases(): Promise<OpenDatabasesState | null> {
   const supabase = createClient();
   const { data, error } = await supabase
     .from("workspace_open_databases")
     .select("database_ids, selected_id")
     .maybeSingle();
   if (error) throw error;
-  if (!data) return EMPTY_OPEN_DATABASES;
+  if (!data) return null;
 
   const row = data as WorkspaceOpenDatabasesDbRow;
   const ids = Array.isArray(row.database_ids)

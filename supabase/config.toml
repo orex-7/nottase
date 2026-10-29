@@ -413,3 +413,13 @@ enabled = true
 # formatted with uppercase keywords, indent 2, max width 180, trailing commas,
 # and column/key alignment. Set to "null" to emit raw, unformatted SQL.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":180,\"commaStyle\":\"trailing\"}"
+
+# ----------------------------------------------------------------------------
+# Edge Functions
+# ----------------------------------------------------------------------------
+
+# Worker das automações. É chamado pelo `pg_cron` (via `pg_net`), não pelo app,
+# então NÃO usa JWT: a autenticação é um header de segredo
+# (`x-automation-secret`). Ver supabase/functions/automation-worker/README.md.
+[functions.automation-worker]
+verify_jwt = false

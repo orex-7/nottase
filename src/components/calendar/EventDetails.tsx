@@ -158,13 +158,13 @@ export function EventDetails({
             </>
           ) : status === "saved" ? (
             <>
-              <Check className="h-3.5 w-3.5 text-green-600" />
+              <Check className="h-3.5 w-3.5 text-success" />
               Salvo
             </>
           ) : status === "error" ? (
             <span className="text-destructive">Erro ao salvar</span>
           ) : status === "invalid" ? (
-            <span className="text-amber-600">Preencha os campos</span>
+            <span className="text-warning">Preencha os campos</span>
           ) : (
             "Edição automática"
           )}

@@ -1657,7 +1657,7 @@ export function PageEditor({
                 title="Opções da célula"
                 onMouseDown={(e) => e.preventDefault()}
                 onClick={() => setCellMenuPanelOpen((prev) => !prev)}
-                className="absolute z-20 flex h-5 w-5 items-center justify-center rounded text-muted-foreground/70 transition-colors hover:bg-accent hover:text-foreground"
+                className="absolute z-20 flex h-5 w-5 items-center justify-center rounded text-faint-foreground transition-colors hover:bg-accent hover:text-foreground"
                 style={{
                   top: cellMenu.top,
                   left: cellMenu.left,
@@ -1887,7 +1887,7 @@ export function PageEditor({
       {/* Rodapé: progresso de tarefas (alinhado ao conteúdo, com a mesma margem) */}
       <div className="flex flex-wrap items-center gap-3 pl-10 pr-10 text-[11px] text-muted-foreground">
         {total > 0 ? (
-          <span className={cn(done === total && "text-emerald-600")}>
+          <span className={cn(done === total && "text-success")}>
             {done}/{total} concluídas
           </span>
         ) : null}

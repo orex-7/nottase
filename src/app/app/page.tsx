@@ -24,7 +24,7 @@ export default async function AppPage() {
     null;
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-muted/30">
+    <main className="flex h-screen flex-col overflow-hidden bg-background">
       <CalendarProvider
         userName={displayName}
         userEmail={user?.email ?? ""}

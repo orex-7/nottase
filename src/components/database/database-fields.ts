@@ -280,6 +280,25 @@ export const OPTION_COLORS: string[] = [
   "bg-teal-500/15 text-teal-700 dark:text-teal-300",
 ];
 
+/**
+ * Cores **nomeadas** oferecidas no seletor de cor de uma opção (a "seta" ao
+ * lado da opção no editor de Opções): 9 cores + "Padrão" (chip sem fundo).
+ * É uma lista curada para a UI — o "Verde-água" continua válido em opções
+ * antigas (a classe de cor fica gravada na própria opção), mas não é oferecido.
+ */
+export const OPTION_COLOR_CHOICES: { label: string; color: string }[] = [
+  { label: "Padrão", color: "" },
+  { label: "Cinza", color: OPTION_COLORS[0] },
+  { label: "Azul", color: OPTION_COLORS[1] },
+  { label: "Verde", color: OPTION_COLORS[2] },
+  { label: "Vermelho", color: OPTION_COLORS[3] },
+  { label: "Roxo", color: OPTION_COLORS[4] },
+  { label: "Ciano", color: OPTION_COLORS[5] },
+  { label: "Laranja", color: OPTION_COLORS[6] },
+  { label: "Rosa", color: OPTION_COLORS[7] },
+  { label: "Amarelo", color: OPTION_COLORS[8] },
+];
+
 /** Gera um id único para uma opção criada no cliente. */
 export function newOptionId(): string {
   return `opt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
@@ -365,7 +384,7 @@ export function cellAreaClick(
   const target = event.target as HTMLElement | null;
   if (
     target?.closest(
-      "input, button, label, a, textarea, select, [data-cell-menu], [contenteditable='true']",
+      "input, button, label, a, textarea, select, [data-cell-menu], [data-cell-editor], [contenteditable='true']",
     )
   ) {
     return;

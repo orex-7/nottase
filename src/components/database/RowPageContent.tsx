@@ -350,7 +350,7 @@ export function RowPageContent({
                   )
                 ) : column.type === "checkbox" ? (
                   raw === "true" || raw === "1" ? (
-                    <CheckSquare className="h-4 w-4 text-emerald-600" />
+                    <CheckSquare className="h-4 w-4 text-success" />
                   ) : (
                     <span className="text-muted-foreground">Sem valor</span>
                   )

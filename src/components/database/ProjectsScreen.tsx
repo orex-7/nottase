@@ -773,7 +773,7 @@ function ProjectCard({ project, onOpen, onDelete }: ProjectCardProps) {
             {project.category}
           </span>
         ) : (
-          <span className="text-xs text-muted-foreground/50">Sem categoria</span>
+          <span className="text-xs text-faint-foreground">Sem categoria</span>
         )}
       </button>
 

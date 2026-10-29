@@ -1,10 +1,22 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { describe, expect, it, vi } from "vitest";
 
 import { DEFAULT_PROJECT_COLOR } from "@/lib/database";
+import type { Database } from "@/types/database";
 
 import { WorkspaceEmptyState } from "./WorkspaceEmptyState";
+
+const DATABASE: Database = {
+  id: "db1",
+  name: "Tarefas",
+  icon: null,
+  projectId: "p1",
+  linkedDatabaseId: null,
+  columns: [{ id: "name", name: "Nome", type: "text" }],
+  rows: [],
+  templates: [],
+};
 
 /** Renderiza o cartão com os callbacks mockados e devolve os spies. */
 function setup(
@@ -84,5 +96,28 @@ describe("WorkspaceEmptyState", () => {
       icon: null,
       linkedDatabaseId: null,
     });
+  });
+
+  it("abre um database pelo seletor na variante sem database aberto", () => {
+    const onOpenDatabase = vi.fn();
+    setup({
+      variant: "no-open-database",
+      projectName: "Trabalho",
+      databases: [DATABASE],
+      projects: [{ id: "p1", name: "Trabalho" }],
+      onOpenDatabase,
+    });
+
+    expect(screen.getByText("Nenhum database aberto")).toBeInTheDocument();
+    expect(
+      screen.getByText('Abra um database de "Trabalho" para começar.'),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Abrir database" }));
+
+    const dialog = screen.getByRole("dialog", { name: "Abrir database" });
+    fireEvent.click(within(dialog).getByRole("button", { name: /Tarefas/ }));
+
+    expect(onOpenDatabase).toHaveBeenCalledWith("db1");
   });
 });

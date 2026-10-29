@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type DragEvent } from "react";
 import { createPortal } from "react-dom";
 import { ChevronRight, GripVertical, Plus, Trash2 } from "lucide-react";
 
@@ -10,14 +10,69 @@ import {
   STATUS_CATEGORIES,
   newOptionId,
 } from "@/components/database/database-fields";
+import { markOptionDrag, moveOption, OPTION_DROP_BAR } from "@/components/database/option-dnd";
+import { OptionColorPopover } from "@/components/database/OptionColorPopover";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { SelectOption, StatusCategory } from "@/types/database";
 
 /**
+ * Reordenação das opções por arrastar-e-soltar (HTML5 DnD nativo — o mesmo
+ * padrão usado na sidebar de projetos). Devolve o estado do arraste e os
+ * handlers a serem ligados em cada item (a linha) e na alça de arraste.
+ */
+function useOptionReorder(
+  options: SelectOption[],
+  onChange: (options: SelectOption[]) => void,
+) {
+  /** Id da opção sendo arrastada. */
+  const [dragId, setDragId] = useState<string | null>(null);
+  /** Id da opção sob o cursor (destino do "solta aqui"). */
+  const [overId, setOverId] = useState<string | null>(null);
+
+  function clear() {
+    setDragId(null);
+    setOverId(null);
+  }
+
+  return {
+    dragId,
+    overId,
+    /** Props da linha que recebe o "solta aqui". */
+    itemProps: (id: string) => ({
+      onDragOver: (event: DragEvent<HTMLElement>) => {
+        if (!dragId) return;
+        // Necessário para permitir o "drop" nesta linha.
+        event.preventDefault();
+        setOverId(id);
+      },
+      onDrop: (event: DragEvent<HTMLElement>) => {
+        if (!dragId) return;
+        event.preventDefault();
+        event.stopPropagation();
+        const next = moveOption(options, dragId, id);
+        if (next) onChange(next);
+        clear();
+      },
+    }),
+    /** Props da alça de arraste. */
+    handleProps: (id: string) => ({
+      draggable: true,
+      onDragStart: (event: DragEvent<HTMLElement>) => {
+        setDragId(id);
+        setOverId(null);
+        markOptionDrag(event, id);
+      },
+      onDragEnd: clear,
+    }),
+  };
+}
+
+/**
  * Editor das opções de uma propriedade Seleção/Seleção múltipla.
- * Permite adicionar, renomear, recolorir e excluir opções (estilo Notion).
+ * Permite adicionar, renomear, recolorir, reordenar (arrastar) e excluir
+ * opções (estilo Notion).
  */
 export function SelectOptionsEditor({
   options,
@@ -28,6 +83,7 @@ export function SelectOptionsEditor({
 }) {
   /** Id da opção cuja paleta de cores está aberta. */
   const [colorFor, setColorFor] = useState<string | null>(null);
+  const reorder = useOptionReorder(options, onChange);
 
   function addOption() {
     onChange([
@@ -55,7 +111,28 @@ export function SelectOptionsEditor({
       ) : (
         <ul className="space-y-1">
           {options.map((option) => (
-            <li key={option.id} className="flex items-center gap-1.5">
+            <li
+              key={option.id}
+              {...reorder.itemProps(option.id)}
+              className={cn(
+                "relative flex items-center gap-1.5 rounded",
+                reorder.dragId === option.id && "opacity-50",
+                // Barra indicadora da posição de inserção (sem borda).
+                reorder.overId === option.id &&
+                  reorder.dragId &&
+                  reorder.dragId !== option.id &&
+                  OPTION_DROP_BAR,
+              )}
+            >
+              <button
+                type="button"
+                {...reorder.handleProps(option.id)}
+                aria-label={`Reordenar opção ${option.label}`}
+                title="Arrastar para reordenar"
+                className="flex h-6 w-4 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
+              >
+                <GripVertical className="h-3.5 w-3.5" />
+              </button>
               <Chip option={option} />
               <Input
                 value={option.label}
@@ -122,12 +199,18 @@ function StatusOptionDetails({
   setColorFor,
   onUpdate,
   onRemove,
+  showColor = true,
 }: {
   option: SelectOption;
   colorFor: string | null;
   setColorFor: (updater: (cur: string | null) => string | null) => void;
   onUpdate: (id: string, patch: Partial<SelectOption>) => void;
   onRemove: (id: string) => void;
+  /**
+   * Quando `false`, esconde o botão de cor (usado no editor de Seleção, onde a
+   * cor é escolhida pelo popover de cores nomeadas aberto pela seta da opção).
+   */
+  showColor?: boolean;
 }) {
   /** Botão da cor é usado para ancorar a paleta fora do container rolável. */
   const colorBtnRef = useRef<HTMLButtonElement>(null);
@@ -165,45 +248,49 @@ function StatusOptionDetails({
 
   return (
     <div className="mb-1 ml-6 flex items-center gap-1.5 rounded border bg-muted/30 p-1.5">
-      <button
-        ref={colorBtnRef}
-        type="button"
-        onClick={togglePalette}
-        aria-label={`Cor da opção ${option.label}`}
-        aria-expanded={colorFor === option.id}
-        title="Alterar cor"
-        className="flex h-[30px] w-[30px] items-center justify-center rounded hover:bg-accent"
-      >
-        <span className={cn("h-3.5 w-3.5 rounded-full", option.color)} />
-      </button>
-      {colorFor === option.id && palettePos
-        ? createPortal(
-            <div
-              data-option-color-palette
-              style={{ top: palettePos.top, left: palettePos.left }}
-              className="fixed z-[60] grid w-28 grid-cols-5 gap-1 rounded-md border bg-popover p-2 shadow-lg"
-            >
-              {OPTION_COLORS.map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  onClick={() => {
-                    onUpdate(option.id, { color });
-                    setColorFor(() => null);
-                    setPalettePos(null);
-                  }}
-                  aria-label="Escolher cor"
-                  className={cn(
-                    "h-4 w-4 rounded-full ring-offset-1 hover:ring-2 hover:ring-ring",
-                    color,
-                    option.color === color && "ring-2 ring-ring",
-                  )}
-                />
-              ))}
-            </div>,
-            document.body,
-          )
-        : null}
+      {showColor ? (
+        <>
+          <button
+            ref={colorBtnRef}
+            type="button"
+            onClick={togglePalette}
+            aria-label={`Cor da opção ${option.label}`}
+            aria-expanded={colorFor === option.id}
+            title="Alterar cor"
+            className="flex h-[30px] w-[30px] items-center justify-center rounded hover:bg-accent"
+          >
+            <span className={cn("h-3.5 w-3.5 rounded-full", option.color)} />
+          </button>
+          {colorFor === option.id && palettePos
+            ? createPortal(
+                <div
+                  data-option-color-palette
+                  style={{ top: palettePos.top, left: palettePos.left }}
+                  className="fixed z-[60] grid w-28 grid-cols-5 gap-1 rounded-md border bg-popover p-2 shadow-lg"
+                >
+                  {OPTION_COLORS.map((color) => (
+                    <button
+                      key={color}
+                      type="button"
+                      onClick={() => {
+                        onUpdate(option.id, { color });
+                        setColorFor(() => null);
+                        setPalettePos(null);
+                      }}
+                      aria-label="Escolher cor"
+                      className={cn(
+                        "h-4 w-4 rounded-full ring-offset-1 hover:ring-2 hover:ring-ring",
+                        color,
+                        option.color === color && "ring-2 ring-ring",
+                      )}
+                    />
+                  ))}
+                </div>,
+                document.body,
+              )
+            : null}
+        </>
+      ) : null}
       <Input
         value={option.label}
         onChange={(e) => onUpdate(option.id, { label: e.target.value })}
@@ -314,7 +401,7 @@ export function StatusCategoryTabs({
               return (
                 <li key={option.id} className="rounded">
                   <div className="flex items-center gap-1 rounded hover:bg-accent/60">
-                    <GripVertical className="ml-1 h-3.5 w-3.5 flex-none text-muted-foreground/60" />
+                    <GripVertical className="ml-1 h-3.5 w-3.5 flex-none text-faint-foreground" />
                     <button
                       type="button"
                       onClick={() => {
@@ -383,6 +470,7 @@ export function SelectOptionsPopover({
   const [editingId, setEditingId] = useState<string | null>(null);
   /** Id da opção cuja paleta de cores está aberta (dentro dos detalhes). */
   const [colorFor, setColorFor] = useState<string | null>(null);
+  const reorder = useOptionReorder(options, onChange);
 
   function addOption() {
     const created = {
@@ -431,14 +519,34 @@ export function SelectOptionsPopover({
           {options.map((option) => {
             const expanded = editingId === option.id;
             return (
-              <li key={option.id} className="rounded">
+              <li
+                key={option.id}
+                {...reorder.itemProps(option.id)}
+                className={cn(
+                  "relative rounded",
+                  // Barra indicadora da posição de inserção (sem borda).
+                  reorder.overId === option.id &&
+                    reorder.dragId &&
+                    reorder.dragId !== option.id &&
+                    OPTION_DROP_BAR,
+                )}
+              >
                 <div
                   className={cn(
                     "flex items-center gap-1 rounded px-1 py-1 hover:bg-accent/60",
                     expanded && "bg-accent/60",
+                    reorder.dragId === option.id && "opacity-50",
                   )}
                 >
-                  <GripVertical className="h-3.5 w-3.5 flex-none text-muted-foreground/60" />
+                  <button
+                    type="button"
+                    {...reorder.handleProps(option.id)}
+                    aria-label={`Reordenar opção ${option.label}`}
+                    title="Arrastar para reordenar"
+                    className="flex h-4 w-4 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
+                  >
+                    <GripVertical className="h-3.5 w-3.5" />
+                  </button>
                   <button
                     type="button"
                     onClick={() =>
@@ -450,13 +558,12 @@ export function SelectOptionsPopover({
                     className="flex min-w-0 flex-1 items-center gap-2 py-0.5 text-left"
                   >
                     <Chip option={option} />
-                    <ChevronRight
-                      className={cn(
-                        "ml-auto h-3.5 w-3.5 flex-none text-muted-foreground transition-transform",
-                        expanded && "rotate-90",
-                      )}
-                    />
                   </button>
+                  {/* A "seta" da opção abre o popover de cores nomeadas. */}
+                  <OptionColorPopover
+                    option={option}
+                    onSelect={(color) => updateOption(option.id, { color })}
+                  />
                 </div>
                 {expanded ? (
                   <StatusOptionDetails
@@ -465,6 +572,7 @@ export function SelectOptionsPopover({
                     setColorFor={setColorFor}
                     onUpdate={updateOption}
                     onRemove={removeOption}
+                    showColor={false}
                   />
                 ) : null}
               </li>

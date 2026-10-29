@@ -428,7 +428,7 @@ export function CreateDatabasePopover({
 
             {pickerOpen ? (
               <div
-                className="absolute left-0 top-full z-10 mt-2 w-64 rounded-md border bg-popover p-2 shadow-md"
+                className="absolute left-0 top-full z-10 mt-2 max-h-[60vh] w-64 overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
                 role="menu"
               >
                 <button

@@ -15,6 +15,15 @@ const config: Config = {
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
+        /* Paleta do app: fundo das sidebars, itens selecionados, texto discreto
+           e as cores dos estados do sistema. */
+        sidebar: "hsl(var(--sidebar))",
+        selection: "hsl(var(--selection))",
+        faint: {
+          foreground: "hsl(var(--faint-foreground))",
+        },
+        success: "hsl(var(--success))",
+        warning: "hsl(var(--warning))",
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
