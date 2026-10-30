@@ -1063,6 +1063,28 @@ function DatabaseTable({
   const titleIconAnchorRef = useRef<HTMLDivElement>(null);
   /** Container rolável da tabela é usado para medir a largura disponível. */
   const tableScrollRef = useRef<HTMLDivElement>(null);
+  /** Painel aberto da célula (campo + lista): usado para medir e limitar. */
+  const cellPanelRef = useRef<HTMLDivElement>(null);
+  /**
+   * Layout do painel da célula aberta (medido do DOM), guardado **junto com a
+   * célula**: ao abrir outra célula os valores começam nulos, o que permite medir
+   * a altura natural do painel antes de limitá-la.
+   * - `flip`: o painel abre para **cima** (a lista fica acima do campo) quando
+   *   não cabe abaixo — evita descer por baixo do rodapé fixo;
+   * - `max`: altura disponível para o painel/lista (trava de segurança);
+   * - `natural`: altura natural medida (campo + lista até 256px + prévia).
+   */
+  const [cellPanelState, setCellPanelState] = useState<{
+    cell: string;
+    flip: boolean;
+    max: number;
+    natural: number;
+  } | null>(null);
+  /** Layout válido para a célula aberta agora (`null` = ainda não medido). */
+  const cellPanelLayout =
+    cellPanelState && cellPanelState.cell === openCell ? cellPanelState : null;
+  /** O painel abre para cima? */
+  const cellPanelFlip = cellPanelLayout?.flip ?? false;
   /** Cabeçalho da tabela (`<thead>`): mede a altura para o `scrollMargin`. */
   const tableHeadRef = useRef<HTMLTableSectionElement>(null);
   /** Altura (px) do cabeçalho sticky, medida do DOM (offset da lista). */
@@ -1973,6 +1995,59 @@ function DatabaseTable({
     // medição caso o container só passe a existir depois (ex.: troca de
     // visualização). Durante o arraste a fantasma acompanha pelo render.
   }, [visibleColumns, columns]);
+
+  /**
+   * Mede o painel da célula aberta e decide como ele cabe:
+   * - se o espaço abaixo (até o rodapé fixo) comporta a altura natural, abre
+   *   para **baixo**, como hoje;
+   * - senão, **flipa para cima** (a lista fica acima do campo), desde que haja
+   *   mais espaço em cima — assim o popover nunca desce por baixo do rodapé.
+   *
+   * O `max` fica como trava de segurança para o caso extremo (lista maior que a
+   * área disponível dos dois lados): só aí a lista rola por dentro.
+   */
+  useLayoutEffect(() => {
+    if (!openCell) return;
+    const container = tableScrollRef.current;
+    const panel = cellPanelRef.current;
+    if (!container || !panel) return;
+
+    const measure = () => {
+      const containerTop = container.getBoundingClientRect().top;
+      const containerBottom = containerTop + container.clientHeight;
+      const cellTop = panel.getBoundingClientRect().top;
+      const spaceBelow = containerBottom - cellTop;
+      const spaceAbove = cellTop - containerTop;
+      setCellPanelState((prev) => {
+        // Altura natural: medida na 1ª passada (quando o painel ainda não tem
+        // limite) e reaproveitada depois, já que o limite a encolheria.
+        const natural =
+          prev && prev.cell === openCell ? prev.natural : panel.scrollHeight;
+        const flip = spaceBelow < natural + 8 && spaceAbove > spaceBelow;
+        const space = flip ? spaceAbove : spaceBelow;
+        const max = Math.max(96, space - 8);
+        return prev &&
+          prev.cell === openCell &&
+          prev.flip === flip &&
+          prev.natural === natural &&
+          Math.abs(prev.max - max) < 1
+          ? prev
+          : { cell: openCell, flip, max, natural };
+      });
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(container);
+    window.addEventListener("resize", measure);
+    // `capture`: pega a rolagem da própria tabela, não só a da janela.
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [openCell]);
 
   /** Colunas agrupáveis do Kanban (select/status), na ordem das colunas. */
   const kanbanColumns = useMemo(() => kanbanGroupColumns(columns), [columns]);
@@ -2917,16 +2992,29 @@ function DatabaseTable({
             </div>
           )}
           {openCell === cellKey ? (
-            // Painel da célula: container posicionado e dimensionado pelo
-            // conteúdo (`w-max`). Assim o campo de entrada e o menu ficam com a
-            // MESMA largura e passam por cima das colunas à direita.
+            // Painel da célula: container posicionado e com largura fixa. Abre
+            // para baixo e, quando não cabe até o rodapé fixo, **flipa para
+            // cima** (a lista fica acima do campo) — sem criar barra de rolagem
+            // e sem invadir a faixa "Nova linha"/"Calcular".
             <div
               data-cell-editor
-              className="absolute left-0 top-0 z-30 w-64 min-w-full"
+              ref={cellPanelRef}
+              className="absolute left-0 top-0 z-30 flex w-64 min-w-full flex-col"
+              style={
+                cellPanelFlip
+                  ? undefined
+                  : { maxHeight: cellPanelLayout?.max }
+              }
             >
               {/* Linha do campo: topo do painel. Sem `border-t` de propósito (a
                   borda somaria 1px e a linha aumentaria ao abrir a célula). */}
-              <div className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5">
+              <div
+                className={cn(
+                  "flex flex-none flex-nowrap items-center gap-1 overflow-hidden border-x bg-popover px-3 py-1.5",
+                  // Flip: o campo vira a parte de baixo da caixa.
+                  cellPanelFlip ? "rounded-b-md border-b" : "rounded-t-md",
+                )}
+              >
                 {current ? (
                   <span className="flex-none">
                     <Chip
@@ -2953,13 +3041,31 @@ function DatabaseTable({
               </div>
               <div
                 data-cell-menu
-                className="rounded-b-md border-x border-b bg-popover p-1 shadow-md"
+                className={cn(
+                  "flex flex-col border-x bg-popover p-1 shadow-md",
+                  cellPanelFlip
+                    ? // Flip: a lista abre ACIMA do campo, ancorada na célula.
+                      "absolute bottom-full left-0 w-full rounded-t-md border-t"
+                    : "min-h-0 flex-1 rounded-b-md border-b",
+                )}
+                style={
+                  cellPanelFlip
+                    ? { maxHeight: cellPanelLayout?.max }
+                    : undefined
+                }
               >
               {/* Lista com altura máxima: mantém o menu compacto mesmo com
                   muitas opções (a rolagem é só vertical). O menu cresce para a
                   direita conforme o conteúdo (`w-max`), então o rótulo do chip
                   não é cortado. */}
-              <div className="max-h-64 overflow-x-hidden overflow-y-auto">
+              <div
+                className={cn(
+                  "min-h-0 max-h-64 overflow-x-hidden overflow-y-auto",
+                  // `flex-1` só depois de medido: no 1º frame a lista fica com a
+                  // altura natural, o que permite medir o painel corretamente.
+                  cellPanelLayout ? "flex-1" : undefined,
+                )}
+              >
                 {visibleOptions.map((opt) => (
                   <div
                     key={opt.id}
@@ -3011,7 +3117,7 @@ function DatabaseTable({
               </div>
               {/* Prévia da opção sendo digitada na célula: "Criar" + chip. */}
               {preview ? (
-                <div className="mt-1 flex items-center gap-1 border-t pt-1">
+                <div className="mt-1 flex flex-none items-center gap-1 border-t pt-1">
                   <button
                     type="button"
                     onClick={() => createOptionFromCell(row, column)}
@@ -3073,16 +3179,29 @@ function DatabaseTable({
             </div>
           )}
           {openCell === cellKey ? (
-            // Painel da célula: container posicionado e dimensionado pelo
-            // conteúdo (`w-max`). Assim o campo de entrada e o menu ficam com a
-            // MESMA largura e passam por cima das colunas à direita.
+            // Painel da célula: container posicionado e com largura fixa. Abre
+            // para baixo e, quando não cabe até o rodapé fixo, **flipa para
+            // cima** (a lista fica acima do campo) — sem criar barra de rolagem
+            // e sem invadir a faixa "Nova linha"/"Calcular".
             <div
               data-cell-editor
-              className="absolute left-0 top-0 z-30 w-64 min-w-full"
+              ref={cellPanelRef}
+              className="absolute left-0 top-0 z-30 flex w-64 min-w-full flex-col"
+              style={
+                cellPanelFlip
+                  ? undefined
+                  : { maxHeight: cellPanelLayout?.max }
+              }
             >
               {/* Linha do campo: topo do painel. Sem `border-t` de propósito (a
                   borda somaria 1px e a linha aumentaria ao abrir a célula). */}
-              <div className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5">
+              <div
+                className={cn(
+                  "flex flex-none flex-nowrap items-center gap-1 overflow-hidden border-x bg-popover px-3 py-1.5",
+                  // Flip: o campo vira a parte de baixo da caixa.
+                  cellPanelFlip ? "rounded-b-md border-b" : "rounded-t-md",
+                )}
+              >
                 {list.map((optId) => {
                   const opt = options.find((o) => o.id === optId) ?? tagById(optId);
                   return opt ? (
@@ -3112,13 +3231,31 @@ function DatabaseTable({
               </div>
               <div
                 data-cell-menu
-                className="rounded-b-md border-x border-b bg-popover p-1 shadow-md"
+                className={cn(
+                  "flex flex-col border-x bg-popover p-1 shadow-md",
+                  cellPanelFlip
+                    ? // Flip: a lista abre ACIMA do campo, ancorada na célula.
+                      "absolute bottom-full left-0 w-full rounded-t-md border-t"
+                    : "min-h-0 flex-1 rounded-b-md border-b",
+                )}
+                style={
+                  cellPanelFlip
+                    ? { maxHeight: cellPanelLayout?.max }
+                    : undefined
+                }
               >
               {/* Lista com altura máxima: mantém o menu compacto mesmo com
                   muitas opções (a rolagem é só vertical). O menu cresce para a
                   direita conforme o conteúdo (`w-max`), então o rótulo do chip
                   não é cortado. */}
-              <div className="max-h-64 overflow-x-hidden overflow-y-auto">
+              <div
+                className={cn(
+                  "min-h-0 max-h-64 overflow-x-hidden overflow-y-auto",
+                  // `flex-1` só depois de medido: no 1º frame a lista fica com a
+                  // altura natural, o que permite medir o painel corretamente.
+                  cellPanelLayout ? "flex-1" : undefined,
+                )}
+              >
                 {visibleOptions.map((opt) => (
                   <div
                     key={opt.id}
@@ -3172,7 +3309,7 @@ function DatabaseTable({
               </div>
               {/* Prévia da opção sendo digitada na célula: "Criar" + chip. */}
               {preview ? (
-                <div className="mt-1 flex items-center gap-1 border-t pt-1">
+                <div className="mt-1 flex flex-none items-center gap-1 border-t pt-1">
                   <button
                     type="button"
                     onClick={() => createOptionFromCell(row, column)}
@@ -5503,10 +5640,12 @@ function DatabaseTable({
               horizontal): botão "Nova linha" + o agregado de cada coluna
               numérica com cálculo ("Calcular"), estilo Notion. Emite as mesmas
               larguras do `colgroup` (gutter + visíveis + ações + fantasma) para
-              não desalinhar a grade. */}
+              não desalinhar a grade.
+              `z-40` de propósito: fica **acima** dos painéis da célula (z-30),
+              então o popover de uma propriedade não cobre esta faixa. */}
           <div
             data-calc-footer
-            className="sticky bottom-0 z-10 flex flex-none border-t bg-card"
+            className="sticky bottom-0 z-40 flex flex-none border-t bg-card"
             style={{ width: tableWidth }}
           >
             {/* Adicionar linha no fim da tabela: fica na faixa do rodapé,
