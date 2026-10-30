@@ -8,6 +8,7 @@ export type ColumnType =
   | "date"
   | "checkbox"
   | "person"
+  | "url"
   | "relation"
   | "rollup";
 

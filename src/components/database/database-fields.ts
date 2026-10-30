@@ -4,6 +4,7 @@ import {
   CheckSquare,
   CircleDashed,
   Hash,
+  Link,
   Link2,
   List,
   ListOrdered,
@@ -81,9 +82,24 @@ export const COLUMN_TYPES: {
   { type: "date", label: "Data", icon: CalendarDays },
   { type: "checkbox", label: "Caixa de seleção", icon: CheckSquare },
   { type: "person", label: "Pessoa", icon: User },
+  { type: "url", label: "Link", icon: Link },
   { type: "relation", label: "Relação", icon: Link2 },
   { type: "rollup", label: "Rollup", icon: Sigma },
 ];
+
+/**
+ * Converte o texto digitado numa propriedade de link num `href` utilizável.
+ * Sem esquema, assume `https://` — mas só quando o texto **parece** um endereço
+ * (tem um ponto e nenhum espaço); caso contrário devolve `""` (nada clicável).
+ */
+export function linkHref(value: string | null | undefined): string {
+  const text = (value ?? "").trim();
+  if (!text || /\s/.test(text)) return "";
+  if (/^[a-z][a-z0-9+.-]*:/i.test(text)) return text;
+  // Sem esquema: precisa parecer um domínio (ex.: "exemplo.com/pagina").
+  if (/^[^\s/]+\.[^\s/]{2,}/.test(text)) return `https://${text}`;
+  return "";
+}
 
 /* -------------------------------------------------------------------------- */
 /* Relação e Rollup                                                            */

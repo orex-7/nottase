@@ -52,7 +52,13 @@ export function NumberCellInput({
   );
 }
 
-/** Chip colorido usado para status e tags. */
+/**
+ * Chip colorido usado para status e tags.
+ *
+ * O rótulo fica num `<span className="truncate">` e o chip pode encolher
+ * (`min-w-0 max-w-full`): assim, num container estreito (ex.: o painel da célula,
+ * que tem largura fixa), o texto termina com "…" em vez de estourar a largura.
+ */
 export function Chip({
   option,
   onRemove,
@@ -63,13 +69,18 @@ export function Chip({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
+        "inline-flex min-w-0 max-w-full items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
         option.color,
       )}
     >
-      {option.label}
+      <span className="truncate">{option.label}</span>
       {onRemove ? (
-        <button type="button" onClick={onRemove} aria-label={`Remover ${option.label}`}>
+        <button
+          type="button"
+          onClick={onRemove}
+          aria-label={`Remover ${option.label}`}
+          className="flex-none"
+        >
           <X className="h-3 w-3" />
         </button>
       ) : null}

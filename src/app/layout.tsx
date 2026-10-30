@@ -9,6 +9,12 @@ export const metadata: Metadata = {
   title: "Calendário Anual",
   description:
     "Calendário anual com visualização de 12 meses e gerenciamento de eventos.",
+  // Ícone da aba do navegador (arquivo em `public/`).
+  icons: {
+    icon: "/icone.png",
+    shortcut: "/icone.png",
+    apple: "/icone.png",
+  },
 };
 
 export default function RootLayout({

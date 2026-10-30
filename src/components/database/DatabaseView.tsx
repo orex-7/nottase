@@ -44,6 +44,7 @@ import {
   CircleDashed,
   Clock,
   Coins,
+  ExternalLink,
   Eye,
   EyeOff,
   FileText,
@@ -144,6 +145,7 @@ import {
   editableOptionsForColumn,
   formatShortDate,
   kanbanGroupColumns,
+  linkHref,
   MAX_COLUMN_WIDTH,
   minColumnWidth,
   moveColumnTo,
@@ -1083,12 +1085,28 @@ function DatabaseTable({
   /** Controla a abertura do popover de configurações da tabela. */
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   /**
-   * Largura (px) da coluna "fantasma" da tabela. Ela absorve o espaço restante
-   * do container rolável para esticar a tabela até o fim da tela (as linhas
-   * horizontais passam a cobrir toda a largura). Vale 0 quando a soma das
-   * colunas já ultrapassa o container (caso em que há rolagem horizontal).
+   * Largura útil (px) do container rolável da tabela, medida com
+   * `ResizeObserver`. A coluna "fantasma" é **derivada** dela no render (junto
+   * com a largura efetiva das colunas) para acompanhar o arraste da alça no
+   * mesmo frame — se fosse um estado atualizado por efeito, o total da tabela
+   * ficaria um frame fora de sincronia e o `table-fixed` redistribuiria o
+   * espaço, fazendo as colunas "pularem" ao redimensionar.
    */
-  const [tableSpacerWidth, setTableSpacerWidth] = useState(0);
+  const [tableViewportWidth, setTableViewportWidth] = useState(0);
+  /**
+   * Altura real (px) da barra de rolagem horizontal do navegador — `0` quando
+   * ele usa barras "overlay" (que não ocupam espaço). Serve para reservar esse
+   * espaço quando a barra **não** está visível (ver o espaçador abaixo da área
+   * rolável).
+   */
+  const [hScrollbarHeight, setHScrollbarHeight] = useState(0);
+  /**
+   * A tabela está mais larga que a área visível? Quando está, a própria barra
+   * horizontal ocupa o espaço; quando não está, o espaçador de mesma altura
+   * reserva esse espaço. Assim o conteúdo nunca "sobe" ao aparecer/sumir a barra
+   * — e a barra continua aparecendo só quando é necessária.
+   */
+  const [hasHorizontalOverflow, setHasHorizontalOverflow] = useState(false);
   /** Sinaliza para rolar a tabela até o fim após adicionar uma nova coluna. */
   const [scrollToColumnsEnd, setScrollToColumnsEnd] = useState(false);
 
@@ -1851,12 +1869,46 @@ function DatabaseTable({
   /** Nº de colunas do `<tbody>` (gutter + visíveis + ações + fantasma). */
   const tableColumnCount = visibleColumns.length + 3;
 
+  /**
+   * Largura efetiva de uma coluna: durante o arraste da alça vale o preview
+   * (`resizing`), senão a largura persistida. O **mesmo** valor precisa ser usado
+   * no `<col>`, na largura total da tabela e na coluna fantasma: assim a soma das
+   * colunas continua igual à largura fixa da tabela em todos os frames e o
+   * `table-fixed` não redistribui o espaço que sobra (o que fazia as colunas
+   * "pularem"/ficarem elásticas ao redimensionar).
+   */
+  const effectiveColumnWidth = (column: Column) =>
+    resizing?.columnId === column.id ? resizing.width : columnWidth(column);
+
+  /** Soma das larguras das colunas visíveis (já com o preview do arraste). */
+  const columnsWidth = visibleColumns.reduce(
+    (sum, c) => sum + effectiveColumnWidth(c),
+    0,
+  );
+
+  /**
+   * Largura (px) da coluna "fantasma" da tabela. Ela absorve o espaço restante
+   * do container rolável para esticar a tabela até o fim da tela (as linhas
+   * horizontais passam a cobrir toda a largura). Vale 0 quando a soma das
+   * colunas já ultrapassa o container (caso em que há rolagem horizontal).
+   * Derivada no render (e não em um efeito) para acompanhar o arraste da alça
+   * no mesmo frame.
+   *
+   * O `- 1` é folga: com `border-collapse`, o Chromium arredonda a largura
+   * renderizada da tabela para cima (ex.: `width: 1230px` vira 1230.5px), o que
+   * geraria 1px de overflow e uma barra de rolagem horizontal mesmo quando as
+   * colunas cabem na tela.
+   */
+  const tableSpacerWidth = Math.max(
+    0,
+    tableViewportWidth -
+      (ROW_GUTTER_WIDTH + columnsWidth + ACTIONS_COLUMN_WIDTH) -
+      1,
+  );
+
   /** Largura total da tabela (gutter + visíveis + ações + coluna fantasma). */
   const tableWidth =
-    ROW_GUTTER_WIDTH +
-    visibleColumns.reduce((sum, c) => sum + columnWidth(c), 0) +
-    ACTIONS_COLUMN_WIDTH +
-    tableSpacerWidth;
+    ROW_GUTTER_WIDTH + columnsWidth + ACTIONS_COLUMN_WIDTH + tableSpacerWidth;
 
   // Mede a altura do cabeçalho sticky (offset do início da lista no scroll).
   useLayoutEffect(() => {
@@ -1879,31 +1931,34 @@ function DatabaseTable({
   }, [query, filterColumnIds, filterValues, rowsVirtualizer]);
 
   /**
-   * Calcula a largura da coluna "fantasma" da tabela: o espaço que sobra no
-   * container rolável depois de descontar a soma das colunas visíveis (e a
-   * coluna de ações). Isso estica a tabela até o fim da tela — as linhas
-   * horizontais passam a cobrir toda a largura — sem distorcer as colunas.
-   * Quando as colunas já ultrapassam o container, a fantasma fica com 0 e o
-   * `overflow-auto` exibe a rolagem horizontal normalmente.
+   * Mede a altura real da barra de rolagem horizontal do navegador (varia por
+   * navegador/SO; é `0` quando as barras são "overlay"). Usa um elemento
+   * descartável com `overflow: scroll` — não há API direta para isso.
+   */
+  useEffect(() => {
+    const probe = document.createElement("div");
+    probe.style.cssText =
+      "position:absolute;top:-9999px;left:-9999px;width:100px;height:100px;overflow:scroll";
+    document.body.appendChild(probe);
+    setHScrollbarHeight(probe.offsetHeight - probe.clientHeight);
+    probe.remove();
+  }, []);
+
+  /**
+   * Mede a largura útil do container rolável da tabela (a coluna "fantasma" é
+   * derivada dela no render — ver `tableSpacerWidth`) e se a tabela está mais
+   * larga que a área visível (define quem reserva o espaço da barra horizontal).
    */
   useEffect(() => {
     const container = tableScrollRef.current;
     if (!container) return;
 
     const measure = () => {
-      const columnsWidth = visibleColumns.reduce(
-        (sum, c) => sum + columnWidth(c),
-        0,
-      );
-      const used = ROW_GUTTER_WIDTH + columnsWidth + ACTIONS_COLUMN_WIDTH;
-      /*
-       * `clientWidth` exclui a barra de rolagem vertical — mede o espaço útil.
-       * Subtraímos 1px de folga: com `border-collapse`, o Chromium arredonda a
-       * largura renderizada da tabela para cima (ex.: `width: 1230px` vira
-       * 1230.5px), o que geraria 1px de overflow e uma barra de rolagem
-       * horizontal mesmo quando as colunas cabem na tela.
-       */
-      setTableSpacerWidth(Math.max(0, container.clientWidth - used - 1));
+      // `clientWidth` exclui a barra de rolagem vertical — mede o espaço útil.
+      setTableViewportWidth(container.clientWidth);
+      // A tabela é mais larga que a área visível? Define quem ocupa o espaço da
+      // barra horizontal: a própria barra (visível) ou o espaçador reservado.
+      setHasHorizontalOverflow(container.scrollWidth > container.clientWidth);
     };
 
     measure();
@@ -1914,9 +1969,10 @@ function DatabaseTable({
       observer.disconnect();
       window.removeEventListener("resize", measure);
     };
-    // Recalcula quando as colunas mudam (add/remover/ocultar/redimensionar).
-    // `resizing?.width` entra para acompanhar o arraste em tempo real.
-  }, [visibleColumns, columns, resizing]);
+    // Recalcula quando as colunas mudam (add/remover/ocultar), garantindo a
+    // medição caso o container só passe a existir depois (ex.: troca de
+    // visualização). Durante o arraste a fantasma acompanha pelo render.
+  }, [visibleColumns, columns]);
 
   /** Colunas agrupáveis do Kanban (select/status), na ordem das colunas. */
   const kanbanColumns = useMemo(() => kanbanGroupColumns(columns), [columns]);
@@ -2245,9 +2301,26 @@ function DatabaseTable({
     afterRowId?: string | null,
     focusNewRow = false,
   ) {
-    // A linha nova nasce vazia: se houver busca ativa ela não casa com o filtro
-    // e ficaria escondida. Em vez de limpar a busca, "fixa" a linha criada para
-    // que ela apareça, preservando o texto da busca.
+    // A linha nova nasce com os valores dos filtros da visão ativa (como no
+    // Notion): assim ela **casa** com o filtro e aparece também nas outras
+    // visões. Sem isso ela nasceria vazia: apareceria só na visão em que foi
+    // criada (pelo patch local abaixo) e sumiria ao trocar de visão, porque o
+    // filtro roda no servidor.
+    const seeded: Record<string, CellValue> = {};
+    for (const id of filterColumnIds) {
+      const column = columns.find((c) => c.id === id);
+      if (!column) continue;
+      const { operator, value } = normalizeFilter(
+        filterOperators[id],
+        filterValues[id],
+      );
+      // Só "é <valor>": os outros operadores não têm valor para preencher
+      // ("está vazio" já nasce satisfeito; "não é"/"não está vazio" são abertos).
+      if (operator !== "is" || value === null) continue;
+      seeded[id] = column.type === "multi_select" ? [value] : value;
+    }
+    // Valores explícitos do chamador têm prioridade sobre os do filtro.
+    const values = { ...seeded, ...(initialValues ?? {}) };
     // Posição calculada entre os vizinhos **carregados** (gaps de 1000) — o
     // wrapper não tem mais a lista completa de linhas.
     let position: number | null = null;
@@ -2257,8 +2330,10 @@ function DatabaseTable({
         position = gapPositionBetween(tableRows[at], tableRows[at + 1] ?? null);
       }
     }
-    return onAddRow(databaseId, initialValues, afterRowId, position).then((created) => {
+    return onAddRow(databaseId, values, afterRowId, position).then((created) => {
       if (created) {
+        // "Fixa" a linha criada: com busca ativa ela não casa com o texto
+        // buscado, mas deve continuar visível (sem limpar a busca).
         setPinnedRowIds((prev) => {
           const next = new Set(prev);
           next.add(created.id);
@@ -2657,15 +2732,42 @@ function DatabaseTable({
   }
 
   /**
-   * Troca a cor de uma opção de uma coluna de seleção (select/multi_select) e
-   * persiste na definição da coluna — as opções vivem em `column.options`.
+   * Atualiza uma opção (rótulo/cor) de uma coluna de seleção e persiste na
+   * definição da coluna — as opções vivem em `column.options`.
    */
-  function updateOptionColor(column: Column, optionId: string, color: string) {
+  function patchColumnOption(
+    column: Column,
+    optionId: string,
+    patch: Partial<SelectOption>,
+  ) {
     updateColumn(column.id, {
       options: editableOptionsForColumn(column).map((o) =>
-        o.id === optionId ? { ...o, color } : o,
+        o.id === optionId ? { ...o, ...patch } : o,
       ),
     });
+  }
+
+  /**
+   * Remove uma opção da coluna e limpa o valor dela na linha em edição (a opção
+   * deixou de existir). As demais linhas são atualizadas ao reabrirem.
+   */
+  function removeColumnOption(column: Column, row: DbRow, optionId: string) {
+    updateColumn(column.id, {
+      options: editableOptionsForColumn(column).filter((o) => o.id !== optionId),
+    });
+    const raw = cellOf(row, column.id);
+    if (column.type === "multi_select") {
+      const list = Array.isArray(raw) ? raw : [];
+      if (list.includes(optionId)) {
+        updateCell(
+          row.id,
+          column.id,
+          list.filter((id) => id !== optionId),
+        );
+      }
+      return;
+    }
+    if (raw === optionId) updateCell(row.id, column.id, "");
   }
 
   /** Cria a opção digitada no menu da célula e já a aplica (select/multi_select). */
@@ -2791,7 +2893,9 @@ function DatabaseTable({
         <td
           className={cn(
             "relative cursor-pointer",
-            openCell === cellKey ? "p-0" : "px-3 py-1.5",
+            // Aberta: mantém a altura da célula fechada (o painel é posicionado,
+            // então não conta para a altura) — assim a linha não "pula".
+            openCell === cellKey ? "h-10 p-0" : "px-3 py-1.5",
           )}
           onClick={(e) =>
             cellAreaClick(e, () =>
@@ -2799,41 +2903,7 @@ function DatabaseTable({
             )
           }
         >
-          {openCell === cellKey ? (
-            // Editor aberto: a célula vira o topo do painel do popover e mostra
-            // a opção atual, com um "x" para limpar a seleção.
-            // Sem `border-t` de propósito: a borda de cima somaria 1px e a linha
-            // aumentaria de altura ao abrir a célula (a linha de cima já traz o
-            // traço, então o visual não muda).
-            <div
-              data-cell-editor
-              className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5"
-            >
-              {current ? (
-                <span className="flex-none">
-                  <Chip
-                    option={current}
-                    onRemove={() => updateCell(row.id, column.id, "")}
-                  />
-                </span>
-              ) : null}
-              {/* Campo de criar opção ao lado da opção selecionada. */}
-              <input
-                value={newOptionText}
-                onChange={(e) => setNewOptionText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    createOptionFromCell(row, column);
-                  }
-                }}
-                aria-label={`Criar nova opção em ${column.name}`}
-                autoFocus
-                className="min-w-0 flex-1 bg-transparent px-1 py-1 text-sm outline-none"
-              />
-              {openPageButton}
-            </div>
-          ) : (
+          {openCell === cellKey ? null : (
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -2847,13 +2917,49 @@ function DatabaseTable({
             </div>
           )}
           {openCell === cellKey ? (
+            // Painel da célula: container posicionado e dimensionado pelo
+            // conteúdo (`w-max`). Assim o campo de entrada e o menu ficam com a
+            // MESMA largura e passam por cima das colunas à direita.
             <div
-              data-cell-menu
-              className="absolute left-0 top-full z-20 w-full rounded-b-md border-x border-b bg-popover p-1 shadow-md"
+              data-cell-editor
+              className="absolute left-0 top-0 z-30 w-64 min-w-full"
             >
+              {/* Linha do campo: topo do painel. Sem `border-t` de propósito (a
+                  borda somaria 1px e a linha aumentaria ao abrir a célula). */}
+              <div className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5">
+                {current ? (
+                  <span className="flex-none">
+                    <Chip
+                      option={current}
+                      onRemove={() => updateCell(row.id, column.id, "")}
+                    />
+                  </span>
+                ) : null}
+                {/* Campo de criar opção ao lado da opção selecionada. */}
+                <input
+                  value={newOptionText}
+                  onChange={(e) => setNewOptionText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      createOptionFromCell(row, column);
+                    }
+                  }}
+                  aria-label={`Criar nova opção em ${column.name}`}
+                  autoFocus
+                  className="min-w-0 flex-1 bg-transparent px-1 py-1 text-sm outline-none"
+                />
+                {openPageButton}
+              </div>
+              <div
+                data-cell-menu
+                className="rounded-b-md border-x border-b bg-popover p-1 shadow-md"
+              >
               {/* Lista com altura máxima: mantém o menu compacto mesmo com
-                  muitas opções. */}
-              <div className="max-h-64 overflow-y-auto">
+                  muitas opções (a rolagem é só vertical). O menu cresce para a
+                  direita conforme o conteúdo (`w-max`), então o rótulo do chip
+                  não é cortado. */}
+              <div className="max-h-64 overflow-x-hidden overflow-y-auto">
                 {visibleOptions.map((opt) => (
                   <div
                     key={opt.id}
@@ -2889,10 +2995,16 @@ function DatabaseTable({
                     >
                       <Chip option={opt} />
                     </button>
-                    {/* Seta: abre o popover de cores nomeadas desta opção. */}
+                    {/* Seta: abre o popover com nome, cor e excluir da opção. */}
                     <OptionColorPopover
                       option={opt}
-                      onSelect={(color) => updateOptionColor(column, opt.id, color)}
+                      onSelect={(color) =>
+                        patchColumnOption(column, opt.id, { color })
+                      }
+                      onRename={(label) =>
+                        patchColumnOption(column, opt.id, { label })
+                      }
+                      onRemove={() => removeColumnOption(column, row, opt.id)}
                     />
                   </div>
                 ))}
@@ -2910,6 +3022,7 @@ function DatabaseTable({
                   <Chip option={preview} />
                 </div>
               ) : null}
+              </div>
             </div>
           ) : null}
         </td>
@@ -2931,7 +3044,9 @@ function DatabaseTable({
         <td
           className={cn(
             "relative cursor-pointer",
-            openCell === cellKey ? "p-0" : "px-3 py-1.5",
+            // Aberta: mantém a altura da célula fechada (o painel é posicionado,
+            // então não conta para a altura) — assim a linha não "pula".
+            openCell === cellKey ? "h-10 p-0" : "px-3 py-1.5",
           )}
           onClick={(e) =>
             cellAreaClick(e, () =>
@@ -2939,44 +3054,7 @@ function DatabaseTable({
             )
           }
         >
-          {openCell === cellKey ? (
-            // Editor aberto: a célula vira o topo do painel do popover e mostra
-            // as opções selecionadas, cada uma com um "x" para remover.
-            // Sem `border-t` de propósito: a borda de cima somaria 1px e a linha
-            // aumentaria de altura ao abrir a célula (a linha de cima já traz o
-            // traço, então o visual não muda).
-            <div
-              data-cell-editor
-              className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5"
-            >
-              {list.map((optId) => {
-                const opt = options.find((o) => o.id === optId) ?? tagById(optId);
-                return opt ? (
-                  <span key={optId} className="flex-none">
-                    <Chip
-                      option={opt}
-                      onRemove={() => toggleTag(row, column.id, optId)}
-                    />
-                  </span>
-                ) : null;
-              })}
-              {/* Campo de criar opção ao lado das opções selecionadas. */}
-              <input
-                value={newOptionText}
-                onChange={(e) => setNewOptionText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    createOptionFromCell(row, column);
-                  }
-                }}
-                aria-label={`Criar nova opção em ${column.name}`}
-                autoFocus
-                className="min-w-0 flex-1 bg-transparent px-1 py-1 text-sm outline-none"
-              />
-              {openPageButton}
-            </div>
-          ) : (
+          {openCell === cellKey ? null : (
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -2995,13 +3073,52 @@ function DatabaseTable({
             </div>
           )}
           {openCell === cellKey ? (
+            // Painel da célula: container posicionado e dimensionado pelo
+            // conteúdo (`w-max`). Assim o campo de entrada e o menu ficam com a
+            // MESMA largura e passam por cima das colunas à direita.
             <div
-              data-cell-menu
-              className="absolute left-0 top-full z-20 w-full rounded-b-md border-x border-b bg-popover p-1 shadow-md"
+              data-cell-editor
+              className="absolute left-0 top-0 z-30 w-64 min-w-full"
             >
+              {/* Linha do campo: topo do painel. Sem `border-t` de propósito (a
+                  borda somaria 1px e a linha aumentaria ao abrir a célula). */}
+              <div className="flex flex-nowrap items-center gap-1 overflow-hidden rounded-t-md border-x bg-popover px-3 py-1.5">
+                {list.map((optId) => {
+                  const opt = options.find((o) => o.id === optId) ?? tagById(optId);
+                  return opt ? (
+                    <span key={optId} className="flex-none">
+                      <Chip
+                        option={opt}
+                        onRemove={() => toggleTag(row, column.id, optId)}
+                      />
+                    </span>
+                  ) : null;
+                })}
+                {/* Campo de criar opção ao lado das opções selecionadas. */}
+                <input
+                  value={newOptionText}
+                  onChange={(e) => setNewOptionText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      createOptionFromCell(row, column);
+                    }
+                  }}
+                  aria-label={`Criar nova opção em ${column.name}`}
+                  autoFocus
+                  className="min-w-0 flex-1 bg-transparent px-1 py-1 text-sm outline-none"
+                />
+                {openPageButton}
+              </div>
+              <div
+                data-cell-menu
+                className="rounded-b-md border-x border-b bg-popover p-1 shadow-md"
+              >
               {/* Lista com altura máxima: mantém o menu compacto mesmo com
-                  muitas opções. */}
-              <div className="max-h-64 overflow-y-auto">
+                  muitas opções (a rolagem é só vertical). O menu cresce para a
+                  direita conforme o conteúdo (`w-max`), então o rótulo do chip
+                  não é cortado. */}
+              <div className="max-h-64 overflow-x-hidden overflow-y-auto">
                 {visibleOptions.map((opt) => (
                   <div
                     key={opt.id}
@@ -3034,13 +3151,21 @@ function DatabaseTable({
                     >
                       <Chip option={opt} />
                       {list.includes(opt.id) ? (
-                        <span className="text-xs text-primary">selecionado</span>
+                        <span className="pl-1 text-xs text-primary">
+                          selecionado
+                        </span>
                       ) : null}
                     </button>
-                    {/* Seta: abre o popover de cores nomeadas desta opção. */}
+                    {/* Seta: abre o popover com nome, cor e excluir da opção. */}
                     <OptionColorPopover
                       option={opt}
-                      onSelect={(color) => updateOptionColor(column, opt.id, color)}
+                      onSelect={(color) =>
+                        patchColumnOption(column, opt.id, { color })
+                      }
+                      onRename={(label) =>
+                        patchColumnOption(column, opt.id, { label })
+                      }
+                      onRemove={() => removeColumnOption(column, row, opt.id)}
                     />
                   </div>
                 ))}
@@ -3058,6 +3183,7 @@ function DatabaseTable({
                   <Chip option={preview} />
                 </div>
               ) : null}
+              </div>
             </div>
           ) : null}
         </td>
@@ -3335,6 +3461,48 @@ function DatabaseTable({
               column={column}
               onChange={(next) => updateCell(row.id, column.id, next)}
             />
+            {openPageButton}
+          </div>
+        </td>
+      );
+    }
+
+    // url ? input de link (texto editável) + botão para abrir em nova aba
+    if (column.type === "url") {
+      const urlValue = Array.isArray(value) ? value.join("") : value ?? "";
+      const href = linkHref(urlValue);
+      return (
+        <td
+          className="cursor-text px-3 py-1.5"
+          onClick={(e) =>
+            cellAreaClick(e, () =>
+              e.currentTarget.querySelector("input")?.focus(),
+            )
+          }
+        >
+          <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+            <input
+              type="text"
+              value={urlValue}
+              onChange={(e) => updateCell(row.id, column.id, e.target.value)}
+              className={cn(
+                "w-full min-w-0 rounded bg-transparent pl-1 pr-2 py-1 outline-none focus:outline-none",
+                // Estilo de link só quando o texto já é um endereço válido.
+                href && "text-primary underline underline-offset-2",
+              )}
+            />
+            {href ? (
+              <a
+                href={href}
+                target="_blank"
+                rel="noopener noreferrer"
+                aria-label="Abrir link"
+                title={href}
+                className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <ExternalLink className="h-3.5 w-3.5" />
+              </a>
+            ) : null}
             {openPageButton}
           </div>
         </td>
@@ -4430,7 +4598,13 @@ function DatabaseTable({
         ) : null}
 
         {/* Área rolável: tabela */}
-        <div ref={tableScrollRef} className="min-h-0 flex-1 overflow-auto">
+        {/* `overflow-auto` (e não `scroll`): a barra horizontal só aparece quando
+            as colunas passam da largura visível. O espaço dela é reservado pelo
+            espaçador logo abaixo, então o conteúdo não "sobe" quando ela surge. */}
+        <div
+          ref={tableScrollRef}
+          className="min-h-0 flex-1 overflow-auto"
+        >
         {/* Tabela */}
         {/* Coluna flex com altura mínima da área visível: a tabela cresce e o
             rodapé "Calcular" fica colado na base, acima da barra de rolagem
@@ -4464,12 +4638,7 @@ function DatabaseTable({
               {orderedVisibleColumns.map((column) => (
                 <col
                   key={column.id}
-                  style={{
-                    width:
-                      resizing?.columnId === column.id
-                        ? resizing.width
-                        : columnWidth(column),
-                  }}
+                style={{ width: effectiveColumnWidth(column) }}
                 />
               ))}
               <col style={{ width: ACTIONS_COLUMN_WIDTH }} />
@@ -5336,6 +5505,7 @@ function DatabaseTable({
               larguras do `colgroup` (gutter + visíveis + ações + fantasma) para
               não desalinhar a grade. */}
           <div
+            data-calc-footer
             className="sticky bottom-0 z-10 flex flex-none border-t bg-card"
             style={{ width: tableWidth }}
           >
@@ -5366,7 +5536,7 @@ function DatabaseTable({
                   // Agregado de coluna numérica: alinhado à direita.
                   column.type === "number" && "text-right",
                 )}
-                style={{ width: columnWidth(column) }}
+                style={{ width: effectiveColumnWidth(column) }}
               >
                 <span className="block truncate whitespace-nowrap">
                   {column.calculate
@@ -5467,6 +5637,20 @@ function DatabaseTable({
         />
         )}
         </div>
+        {/* Reserva a altura da barra horizontal quando ela **não** está visível:
+            sem isso o conteúdo (linhas + rodapé "Calcular") sobe ao aparecer a
+            barra. Fica 0 em navegadores com barras "overlay" (que não ocupam
+            espaço) — aí não há nada a reservar. Só vale na Tabela, que é quem
+            rola na horizontal. */}
+        {activeView.type === "table" &&
+        !hasHorizontalOverflow &&
+        hScrollbarHeight > 0 ? (
+          <div
+            aria-hidden="true"
+            className="flex-none"
+            style={{ height: hScrollbarHeight }}
+          />
+        ) : null}
         </div>
       </div>
 

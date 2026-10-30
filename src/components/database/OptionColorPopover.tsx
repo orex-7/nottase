@@ -2,16 +2,20 @@
 
 import { useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronRight } from "lucide-react";
+import { Check, ChevronRight, Trash2 } from "lucide-react";
 
 import { OPTION_COLOR_CHOICES } from "@/components/database/database-fields";
+import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { SelectOption } from "@/types/database";
 
 /**
  * Seletor de cor de uma opção, aberto pela "seta" ao lado da opção no editor de
- * Opções (Seleção / Seleção múltipla). Mostra as cores **nomeadas** (9 cores +
- * "Padrão"): quadrado da cor à esquerda e o nome à direita.
+ * Opções e no menu da célula. Mostra as cores **nomeadas** (9 cores + "Padrão"):
+ * quadrado da cor à esquerda e o nome à direita.
+ *
+ * Quando `onRename`/`onRemove` são informados (menu da célula), o popover ganha
+ * no topo o campo com o nome da opção e, logo abaixo, o botão de excluir.
  *
  * O popover é renderizado num portal com `position: fixed` (com um fundo
  * invisível para fechar ao clicar fora) para não ser recortado pelo
@@ -20,9 +24,15 @@ import type { SelectOption } from "@/types/database";
 export function OptionColorPopover({
   option,
   onSelect,
+  onRename,
+  onRemove,
 }: {
   option: SelectOption;
   onSelect: (color: string) => void;
+  /** Quando informado, mostra o campo de nome da opção no topo. */
+  onRename?: (label: string) => void;
+  /** Quando informado, mostra o botão de excluir a opção abaixo do nome. */
+  onRemove?: () => void;
 }) {
   /** Botão (seta) usado para ancorar o popover. */
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -84,6 +94,33 @@ export function OptionColorPopover({
                 aria-label={`Cor da opção ${option.label}`}
                 onClick={(e) => e.stopPropagation()}
               >
+                {onRename || onRemove ? (
+                  <div className="mb-1 space-y-1 border-b pb-1">
+                    {onRename ? (
+                      <Input
+                        value={option.label}
+                        onChange={(e) => onRename(e.target.value)}
+                        aria-label={`Nome da opção ${option.label}`}
+                        className="h-7 px-2 text-sm"
+                      />
+                    ) : null}
+                    {onRemove ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          onRemove();
+                          setPos(null);
+                        }}
+                        aria-label={`Excluir opção ${option.label}`}
+                        title="Excluir opção"
+                        className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-destructive hover:bg-destructive/10"
+                      >
+                        <Trash2 className="h-3.5 w-3.5 flex-none" />
+                        Excluir
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 {OPTION_COLOR_CHOICES.map((choice) => {
                   const isCurrent = option.color === choice.color;
                   return (

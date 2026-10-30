@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyVisibleColumnOrder,
+  linkHref,
   moveColumnTo,
   relatedDatabaseFor,
 } from "@/components/database/database-fields";
@@ -139,5 +140,31 @@ describe("applyVisibleColumnOrder", () => {
     expect(ids(applyVisibleColumnOrder(columns, ["a", "b"], ["a", "b"]))).toEqual(
       ["a", "b"],
     );
+  });
+});
+
+describe("linkHref", () => {
+  it("mantém endereços que já têm esquema", () => {
+    expect(linkHref("https://exemplo.com")).toBe("https://exemplo.com");
+    expect(linkHref("http://exemplo.com/a?b=1")).toBe(
+      "http://exemplo.com/a?b=1",
+    );
+    expect(linkHref("mailto:alguem@exemplo.com")).toBe(
+      "mailto:alguem@exemplo.com",
+    );
+  });
+
+  it("assume https:// quando falta o esquema", () => {
+    expect(linkHref("exemplo.com")).toBe("https://exemplo.com");
+    expect(linkHref("  exemplo.com/pagina  ")).toBe(
+      "https://exemplo.com/pagina",
+    );
+  });
+
+  it("não transforma texto solto em link", () => {
+    expect(linkHref("")).toBe("");
+    expect(linkHref("   ")).toBe("");
+    expect(linkHref("nota")).toBe("");
+    expect(linkHref("duas palavras.com")).toBe("");
   });
 });

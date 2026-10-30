@@ -129,6 +129,18 @@ const MULTI_SELECT_DATABASE: Database = {
   templates: [],
 };
 
+/** Database com uma propriedade de link (URL). */
+const URL_DATABASE: Database = {
+  id: "db1",
+  name: "Links",
+  icon: null,
+  projectId: "p1",
+  linkedDatabaseId: null,
+  columns: [{ id: "site", name: "Site", type: "url" }],
+  rows: [],
+  templates: [],
+};
+
 const TAGS_DATABASE: Database = {
   ...MULTI_SELECT_DATABASE,
   columns: [
@@ -166,6 +178,8 @@ describe("DatabaseView — estado vazio", () => {
     deleteRowMock.mockReset().mockResolvedValue(undefined);
     // O store é um singleton: limpa o projeto ativo entre os testes.
     useCalendarStore.setState({ activeProjectId: null });
+    // Visualizações salvas (localStorage) não vazam de um teste para o outro.
+    window.localStorage.removeItem("calendar:dbViews:db1");
   });
 
   it("sai do carregamento e mostra o cartão de boas-vindas sem projetos", async () => {
@@ -302,6 +316,42 @@ describe("DatabaseView — estado vazio", () => {
     expect(createRowAtEndMock).toHaveBeenCalledWith("db1", expect.any(Object));
   });
 
+  it("cria a linha já com os valores do filtro da visão ativa", async () => {
+    // Visão ativa com filtro: "Tags é Urgente" (id da opção: o1).
+    window.localStorage.setItem(
+      "calendar:dbViews:db1",
+      JSON.stringify({
+        views: [
+          {
+            id: "v-filtro",
+            type: "table",
+            name: "Urgentes",
+            filters: {
+              columnIds: ["tags"],
+              values: { tags: "o1" },
+              operators: { tags: "is" },
+            },
+          },
+        ],
+        activeViewId: "v-filtro",
+        kanbanColumnId: null,
+      }),
+    );
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([TAGS_DATABASE]);
+
+    render(<DatabaseView userName="Ana" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Nova linha" }));
+
+    // A linha nasce casando com o filtro (multi_select → lista), então aparece
+    // também nas outras visões em vez de sumir ao trocar de visão.
+    expect(createRowAtEndMock).toHaveBeenCalledWith(
+      "db1",
+      expect.objectContaining({ tags: ["o1"] }),
+    );
+  });
+
   it("cria uma opção pelo botão no menu da célula de seleção múltipla", async () => {
     fetchProjectsMock.mockResolvedValue([PROJECT]);
     fetchDatabasesMock.mockResolvedValue([MULTI_SELECT_DATABASE]);
@@ -340,6 +390,83 @@ describe("DatabaseView — estado vazio", () => {
     // remover, e também na lista do popover.
     expect(await screen.findByLabelText("Remover Urgente")).toBeInTheDocument();
     expect(await screen.findAllByText("Urgente")).not.toHaveLength(0);
+  });
+
+  it("renomeia a opção pelo popover de cor no menu da célula", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([TAGS_DATABASE]);
+    fetchRowsMock.mockResolvedValue({
+      rows: [{ id: "r1", values: { tags: ["o1"] } }],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    const { container } = render(<DatabaseView userName="Ana" />);
+
+    const trigger = await waitFor(() => {
+      const el = container.querySelector<HTMLButtonElement>(
+        "[data-cell-menu-trigger]",
+      );
+      expect(el).not.toBeNull();
+      return el as HTMLButtonElement;
+    });
+    fireEvent.click(trigger);
+
+    // A seta da opção abre o popover com o campo de nome e o botão de excluir.
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cor da opção Urgente" }),
+    );
+    const nameInput = screen.getByLabelText("Nome da opção Urgente");
+    expect(nameInput).toHaveValue("Urgente");
+    expect(
+      screen.getByRole("button", { name: "Excluir opção Urgente" }),
+    ).toBeInTheDocument();
+
+    fireEvent.change(nameInput, { target: { value: "Urgentíssimo" } });
+
+    await waitFor(() => expect(updateDatabaseColumnsMock).toHaveBeenCalled());
+    const calls = updateDatabaseColumnsMock.mock.calls;
+    const next = calls[calls.length - 1][1];
+    expect(next.find((c) => c.id === "tags")?.options?.[0]?.label).toBe(
+      "Urgentíssimo",
+    );
+  });
+
+  it("exclui a opção pelo popover de cor e limpa o valor da célula", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([TAGS_DATABASE]);
+    fetchRowsMock.mockResolvedValue({
+      rows: [{ id: "r1", values: { tags: ["o1"] } }],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    const { container } = render(<DatabaseView userName="Ana" />);
+
+    const trigger = await waitFor(() => {
+      const el = container.querySelector<HTMLButtonElement>(
+        "[data-cell-menu-trigger]",
+      );
+      expect(el).not.toBeNull();
+      return el as HTMLButtonElement;
+    });
+    fireEvent.click(trigger);
+    fireEvent.click(
+      screen.getByRole("button", { name: "Cor da opção Urgente" }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: "Excluir opção Urgente" }),
+    );
+
+    // A opção sai da coluna...
+    await waitFor(() => expect(updateDatabaseColumnsMock).toHaveBeenCalled());
+    const calls = updateDatabaseColumnsMock.mock.calls;
+    const next = calls[calls.length - 1][1];
+    expect(next.find((c) => c.id === "tags")?.options).toHaveLength(1);
+    // ...e o valor dela é limpo na linha (a opção não existe mais).
+    await waitFor(() =>
+      expect(updateRowCellMock).toHaveBeenCalledWith("r1", "tags", []),
+    );
   });
 
   it("filtra as opções conforme o texto digitado no campo da célula", async () => {
@@ -571,6 +698,123 @@ describe("DatabaseView — estado vazio", () => {
     // "Página inteira" fica DENTRO da área do conteúdo (não cobre a tela toda).
     expect(dialog.parentElement?.className).toContain("absolute");
     expect(dialog.parentElement?.className).not.toContain("fixed");
+  });
+
+  it("mantém a largura total da tabela ao redimensionar uma coluna", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([DATABASE]);
+    fetchRowsMock.mockResolvedValue({
+      rows: [{ id: "r1", values: { name: "Um" } }],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    const { container } = render(<DatabaseView userName="Ana" />);
+
+    const table = await waitFor(() => {
+      const el = container.querySelector<HTMLTableElement>(
+        "[data-database-table]",
+      );
+      expect(el).not.toBeNull();
+      return el as HTMLTableElement;
+    });
+
+    /** Soma das larguras declaradas no `<colgroup>` (gutter + colunas + ações + fantasma). */
+    const sumColWidths = () =>
+      Array.from(table.querySelectorAll("col")).reduce(
+        (sum, col) =>
+          sum + Number.parseFloat((col as HTMLElement).style.width || "0"),
+        0,
+      );
+    const tableWidth = () => Number.parseFloat(table.style.width || "0");
+    /** Largura declarada da 1ª coluna de dados (índice 0 é a gutter). */
+    const nameColWidth = () =>
+      Number.parseFloat(
+        (table.querySelectorAll("col")[1] as HTMLElement).style.width || "0",
+      );
+    /**
+     * Larguras dos blocos do rodapé "Calcular" (gutter, colunas, ações,
+     * fantasma) — precisam acompanhar o arraste junto com o `<colgroup>`.
+     */
+    const footerWidths = () =>
+      Array.from(
+        container.querySelectorAll<HTMLElement>("[data-calc-footer] > div"),
+      ).map((el) => Number.parseFloat(el.style.width || "0"));
+
+    // Invariante: a tabela tem exatamente a soma das colunas (o `table-fixed`
+    // não tem folga para redistribuir e "puxar" as outras colunas).
+    expect(sumColWidths()).toBe(tableWidth());
+    expect(nameColWidth()).toBe(220);
+    expect(footerWidths()[1]).toBe(220);
+
+    const handle = screen.getByRole("separator", {
+      name: "Redimensionar coluna Nome",
+    });
+    fireEvent(
+      handle,
+      new MouseEvent("pointerdown", { bubbles: true, clientX: 300 }),
+    );
+    // Arrasta 50px para a esquerda (diminuir a coluna).
+    fireEvent(window, new MouseEvent("pointermove", { clientX: 250 }));
+
+    // O preview do arraste foi aplicado...
+    expect(nameColWidth()).toBe(170);
+    // ...o rodapé acompanha...
+    expect(footerWidths()[1]).toBe(170);
+    // ...e o total continua batendo — é isso que evita o "pulo" nas outras.
+    expect(sumColWidths()).toBe(tableWidth());
+    expect(footerWidths().reduce((sum, w) => sum + w, 0)).toBe(tableWidth());
+
+    fireEvent(window, new MouseEvent("pointerup", { clientX: 250 }));
+
+    // Ao soltar, a largura é persistida e o total segue batendo.
+    expect(nameColWidth()).toBe(170);
+    expect(footerWidths()[1]).toBe(170);
+    expect(sumColWidths()).toBe(tableWidth());
+    await waitFor(() => expect(updateDatabaseColumnsMock).toHaveBeenCalled());
+    const lastCall =
+      updateDatabaseColumnsMock.mock.calls[
+        updateDatabaseColumnsMock.mock.calls.length - 1
+      ];
+    expect(lastCall?.[0]).toBe("db1");
+    expect(lastCall?.[1].find((c) => c.id === "name")?.width).toBe(170);
+  });
+
+  it("mostra a propriedade de link com o href normalizado", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([URL_DATABASE]);
+    fetchRowsMock.mockResolvedValue({
+      rows: [{ id: "r1", values: { site: "exemplo.com/pagina" } }],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    render(<DatabaseView userName="Ana" />);
+
+    const link = await screen.findByRole("link", { name: "Abrir link" });
+    expect(link).toHaveAttribute("href", "https://exemplo.com/pagina");
+    expect(link).toHaveAttribute("target", "_blank");
+    // O valor continua editável na célula (texto cru, sem o esquema).
+    expect(screen.getByDisplayValue("exemplo.com/pagina")).toBeInTheDocument();
+  });
+
+  it("não cria link para um texto que não é endereço", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([URL_DATABASE]);
+    fetchRowsMock.mockResolvedValue({
+      rows: [{ id: "r1", values: { site: "só uma anotação" } }],
+      nextCursor: null,
+      hasMore: false,
+    });
+
+    render(<DatabaseView userName="Ana" />);
+
+    expect(
+      await screen.findByDisplayValue("só uma anotação"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("link", { name: "Abrir link" }),
+    ).not.toBeInTheDocument();
   });
 
   it("respeita o estado salvo vazio e não reabre o primeiro database", async () => {
