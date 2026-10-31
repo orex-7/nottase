@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeft,
@@ -198,9 +198,18 @@ export function TableSettingsPopover({
     setIconPickerOpen(true);
   };
 
-  // Volta para a tela inicial (menu ou edição) sempre que o popover reabre.
-  useEffect(() => {
-    if (open) setView(initialView);
+  // Ao reabrir o popover, volta para a tela inicial e **fecha os sub-popovers**:
+  // o seletor de ícone é um portal (não é filho do popover), então sem isso ele
+  // reaparecia aberto depois de fechar e reabrir as configurações.
+  // `useLayoutEffect` para o ajuste valer já no 1º paint (sem piscar o seletor).
+  useLayoutEffect(() => {
+    if (!open) return;
+    setView(initialView);
+    setIconPickerOpen(false);
+    setIconPickerPos(null);
+    setOpenTypeFor(null);
+    setOpenOptionsFor(null);
+    setConfirmDelete(false);
   }, [open, initialView]);
 
   /** Posição (top/right) do popover, ancorado abaixo do botão de configurações. */
