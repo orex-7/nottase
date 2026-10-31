@@ -72,6 +72,25 @@ export function CalendarProvider({
   } | null>(null);
   /** Incrementado após edições no popover para forçar recarga dos eventos de db. */
   const [dbRefreshKey, setDbRefreshKey] = useState(0);
+  /** Navegação off-canvas do celular (sidebar/gaveta aberta). */
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  const closeMobileNav = useCallback(() => setMobileNavOpen(false), []);
+
+  // Trocar de app (Calendário/Workspace) fecha a gaveta do celular.
+  useEffect(() => {
+    setMobileNavOpen(false);
+  }, [appView]);
+
+  // Esc fecha a gaveta do celular.
+  useEffect(() => {
+    if (!mobileNavOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setMobileNavOpen(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [mobileNavOpen]);
 
   // Intervalo de datas visível (semana: dom–sáb; mês: grade completa).
   const range = useMemo(() => {
@@ -315,7 +334,19 @@ export function CalendarProvider({
         userName={userName}
         userEmail={userEmail}
         userAvatar={userAvatar}
+        onOpenMobileNav={() => setMobileNavOpen(true)}
+        mobileNavOpen={mobileNavOpen}
       />
+
+      {/* Fundo escurecido da gaveta do celular: clique fecha. */}
+      {mobileNavOpen ? (
+        <div
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={closeMobileNav}
+          role="presentation"
+          aria-hidden="true"
+        />
+      ) : null}
 
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {appView === "calendar" ? (
@@ -331,6 +362,8 @@ export function CalendarProvider({
               onToday={goToToday}
               onOpenDatabase={requestOpenDatabase}
               onCreateDatabase={requestCreateDatabase}
+              mobileOpen={mobileNavOpen}
+              onCloseMobile={closeMobileNav}
             />
             <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
               {error ? (
@@ -379,7 +412,11 @@ export function CalendarProvider({
             </div>
           </>
         ) : (
-          <DatabaseView userName={userName} />
+          <DatabaseView
+            userName={userName}
+            mobileNavOpen={mobileNavOpen}
+            onCloseMobileNav={closeMobileNav}
+          />
         )}
       </div>
 

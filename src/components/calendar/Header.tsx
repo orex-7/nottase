@@ -10,6 +10,7 @@ import {
   LogOut,
   User,
   LayoutDashboard,
+  Menu,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,10 @@ interface HeaderProps {
   userEmail: string;
   /** Foto do usuário (provedor OAuth); `null` = usar o ícone padrão. */
   userAvatar: string | null;
+  /** Abre a navegação off-canvas no celular (botão `md:hidden`). */
+  onOpenMobileNav: () => void;
+  /** Estado da navegação off-canvas, usado no `aria-expanded` do botão. */
+  mobileNavOpen: boolean;
 }
 
 /**
@@ -86,6 +91,8 @@ export function Header({
   userName,
   userEmail,
   userAvatar,
+  onOpenMobileNav,
+  mobileNavOpen,
 }: HeaderProps) {
   /** Menu do usuário (avatar) aberto. */
   const [userMenuOpen, setUserMenuOpen] = useState(false);
@@ -138,10 +145,24 @@ export function Header({
         : "text-muted-foreground hover:bg-accent hover:text-foreground",
     );
 
+  // `relative z-30`: o `backdrop-blur` cria um stacking context e, sem um
+  // z-index explícito, o cabeçalho sticky da tabela (`z-10`) ficava por cima do
+  // menu do usuário. Fica abaixo do fundo escuro/gaveta do celular (z-40/z-50).
   return (
-    <header className="shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+    <header className="relative z-30 shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
       <div className="relative flex flex-wrap items-center justify-between gap-3 px-4 py-2">
         <div className="flex items-center gap-3">
+          {/* Navegação off-canvas: só no celular (`md:hidden`). */}
+          <button
+            type="button"
+            onClick={onOpenMobileNav}
+            aria-label="Abrir navegação"
+            aria-expanded={mobileNavOpen}
+            title="Abrir navegação"
+            className="flex h-7 w-7 flex-none items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground md:hidden"
+          >
+            <Menu className="h-4 w-4" />
+          </button>
           <div className="flex items-center gap-1">
             <div className="flex items-center rounded-md border p-0.5">
               <button
@@ -161,7 +182,8 @@ export function Header({
                 className={appButtonClass(appView === workspaceOption.view)}
               >
                 <WorkspaceIcon className="h-3.5 w-3.5" />
-                {workspaceOption.label}
+                {/* O rótulo some no celular para a barra não quebrar em 3 linhas. */}
+                <span className="hidden sm:inline">{workspaceOption.label}</span>
               </button>
             </div>
           </div>

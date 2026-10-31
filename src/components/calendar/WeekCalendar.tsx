@@ -145,7 +145,7 @@ export function WeekCalendar({
     <div className="flex h-full min-h-0 flex-col overflow-hidden rounded-lg border bg-card">
       {/* Cabeçalho: canto + 7 dias */}
       <div className="flex shrink-0 border-b">
-        <div className="w-14 shrink-0 border-r" />
+        <div className="w-10 shrink-0 border-r sm:w-14" />
         <div className="grid flex-1 grid-cols-7">
           {days.map((day, i) => {
             const key = toDateKey(day);
@@ -182,7 +182,7 @@ export function WeekCalendar({
       {/* Faixa de eventos "dia todo" */}
       {hasAllDay ? (
         <div className="flex shrink-0 border-b bg-muted/20">
-          <div className="flex w-14 shrink-0 flex-col items-end justify-center gap-1 border-r pr-1.5">
+          <div className="flex w-10 shrink-0 flex-col items-end justify-center gap-1 border-r pr-1.5 sm:w-14">
             <span className="text-[9px] uppercase text-muted-foreground">
               dia todo
             </span>
@@ -248,7 +248,7 @@ export function WeekCalendar({
       <div ref={scrollRef} className="no-scrollbar min-h-0 flex-1 overflow-y-auto">
         <div className="flex">
           {/* Coluna de horários */}
-          <div className="w-14 shrink-0 border-r">
+          <div className="w-10 shrink-0 border-r sm:w-14">
             {HOURS.map((hour) => (
               <div
                 key={hour}

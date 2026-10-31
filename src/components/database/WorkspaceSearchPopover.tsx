@@ -98,7 +98,9 @@ export function WorkspaceSearchPopover({
   useLayoutEffect(() => {
     const sidebar = anchorEl.closest("aside") ?? anchorEl;
     const rect = sidebar.getBoundingClientRect();
-    const width = Math.max(320, Math.min(560, window.innerWidth - 32));
+    // Largura com folga de 16px (8px de cada lado) e mínimo de 288px para
+    // caber em telas estreitas (~320px); `left` mantém a paleta na tela.
+    const width = Math.max(288, Math.min(560, window.innerWidth - 16));
     setPos({
       top: rect.top + 5,
       left: Math.max(8, (window.innerWidth - width) / 2),

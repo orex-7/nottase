@@ -186,7 +186,7 @@ export function KanbanBoard({
                   <div
                     data-kanban-menu
                     role="menu"
-                    className="absolute right-0 top-full z-50 mt-1 w-60 rounded-md border bg-popover p-1 text-sm shadow-md"
+                    className="absolute right-0 top-full z-50 mt-1 w-60 max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-1 text-sm shadow-md"
                   >
                     {editingGroups ? (
                       <div className="space-y-1">

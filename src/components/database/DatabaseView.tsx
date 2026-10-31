@@ -5,7 +5,8 @@ import { createPortal } from "react-dom";
 import {
   DndContext,
   DragOverlay,
-  PointerSensor,
+  MouseSensor,
+  TouchSensor,
   useDraggable,
   useDroppable,
   useSensor,
@@ -877,9 +878,16 @@ function DatabaseTable({
 
   // --- Drag and drop (dnd-kit) --------------------------------------------
   const sensors = useSensors(
-    // Uma pequena distância evita que um clique simples vire arraste — o clique
-    // continua abrindo o editor da propriedade.
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    // Mouse: uma pequena distância evita que um clique simples vire arraste — o
+    // clique continua abrindo o editor da propriedade (comportamento idêntico ao
+    // antigo `PointerSensor`).
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    // Toque: só inicia o arraste após um pressionar longo (250ms). Assim um
+    // deslize rápido continua rolando a tabela (vertical/horizontal) em vez de
+    // arrastar linha/coluna.
+    useSensor(TouchSensor, {
+      activationConstraint: { delay: 250, tolerance: 8 },
+    }),
   );
 
   /** Restringe ao eixo: horizontal para propriedades, vertical para linhas. */
@@ -2999,7 +3007,7 @@ function DatabaseTable({
             <div
               data-cell-editor
               ref={cellPanelRef}
-              className="absolute left-0 top-0 z-30 flex w-64 min-w-full flex-col"
+              className="absolute left-0 top-0 z-30 flex w-64 flex-col md:min-w-full"
               style={
                 cellPanelFlip
                   ? undefined
@@ -3186,7 +3194,7 @@ function DatabaseTable({
             <div
               data-cell-editor
               ref={cellPanelRef}
-              className="absolute left-0 top-0 z-30 flex w-64 min-w-full flex-col"
+              className="absolute left-0 top-0 z-30 flex w-64 flex-col md:min-w-full"
               style={
                 cellPanelFlip
                   ? undefined
@@ -3415,7 +3423,7 @@ function DatabaseTable({
                 <div
                   data-cell-menu
                   data-relation-cell-popover
-                  className="fixed z-50 max-h-[22rem] w-72 overflow-hidden rounded-md border bg-popover p-1 shadow-md"
+                  className="fixed z-50 max-h-[22rem] w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-md border bg-popover p-1 shadow-md"
                   style={{
                     top: relationCellPos.top,
                     left: relationCellPos.left,
@@ -3767,9 +3775,11 @@ function DatabaseTable({
           é mantido para a superfície combinar com o cabeçalho/rodapé sticky). */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-card">
-        {/* Barra de título do database (estilo Notion) */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b px-4 py-3">
-          <div className="flex items-center gap-2">
+        {/* Barra de título do database (estilo Notion). No celular fica em uma
+            linha só (os botões à direita do nome); a partir de `md` volta a
+            poder quebrar como antes. */}
+        <div className="flex flex-nowrap items-center justify-between gap-2 border-b px-4 py-3 md:flex-wrap">
+          <div className="flex min-w-0 flex-1 items-center gap-2 md:flex-none">
             <div className="relative" ref={titleIconAnchorRef}>
               <button
                 type="button"
@@ -3792,7 +3802,7 @@ function DatabaseTable({
                   <div
                     data-icon-picker
                     role="menu"
-                    className="absolute left-0 top-full z-50 mt-1 max-h-[60vh] w-64 overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
+                    className="absolute left-0 top-full z-50 mt-1 max-h-[60vh] w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
                   >
                     <button
                       type="button"
@@ -3842,7 +3852,9 @@ function DatabaseTable({
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
-              className="min-w-0 rounded bg-transparent px-1 text-lg font-semibold outline-none focus:bg-accent"
+              // No celular o nome do database não é clicável/editável (evita o
+              // teclado ao tocar); a partir de `md` volta a ser o título editável.
+              className="min-w-0 flex-1 rounded bg-transparent px-1 text-lg font-semibold outline-none focus:bg-accent max-md:pointer-events-none max-md:select-none md:flex-none"
               aria-label="Título do database"
             />
             {/* Link para o database relacionado: aparece assim que este database
@@ -3853,16 +3865,16 @@ function DatabaseTable({
                 onClick={() => onOpenDatabase(linkedDatabase.id)}
                 title={`Ir para o database relacionado: ${linkedDatabase.name}`}
                 aria-label={`Ir para o database relacionado ${linkedDatabase.name}`}
-                className="flex min-w-0 flex-none items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                className="flex min-w-0 shrink items-center gap-1 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 <Link className="h-3.5 w-3.5 shrink-0" />
-                <span className="max-w-[160px] truncate">
+                <span className="max-w-[110px] truncate md:max-w-[160px]">
                   {linkedDatabase.name}
                 </span>
               </button>
             ) : null}
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             {/* Busca recolhida: só o ícone de lupa; clicar abre (e foca) o input. */}
             {searchOpen ? (
               <div className="relative">
@@ -3893,7 +3905,7 @@ function DatabaseTable({
                   }}
                   placeholder="Buscar..."
                   aria-label="Buscar na tabela"
-                  className="w-44 pl-8"
+                  className="w-32 pl-8 md:w-44"
                 />
               </div>
             ) : (
@@ -3950,7 +3962,7 @@ function DatabaseTable({
                 <div
                   data-filter-popover
                   role="menu"
-                  className="absolute right-0 top-full z-50 mt-1 w-56 rounded-md border bg-popover p-1 text-sm shadow-md"
+                  className="absolute right-0 top-full z-50 mt-1 max-h-[80vh] w-56 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-1 text-sm shadow-md"
                 >
                   {renderFilterPropertyList(() => setIsFilterOpen(false))}
                 </div>
@@ -4160,7 +4172,7 @@ function DatabaseTable({
               {viewsMenuOpen ? (
                 <div
                   data-views-menu
-                  className="absolute left-0 top-full z-30 mt-1 w-44 rounded-md border bg-popover p-1 shadow-md"
+                  className="absolute left-0 top-full z-30 mt-1 w-44 max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-1 shadow-md"
                 >
                   <div className="px-2 py-1 text-[11px] uppercase tracking-wide text-muted-foreground">
                     Nova visualização
@@ -4203,7 +4215,7 @@ function DatabaseTable({
                       top: overflowViewsPos.top,
                       left: overflowViewsPos.left,
                     }}
-                    className="fixed z-[70] max-h-[70vh] w-56 overflow-y-auto rounded-lg border bg-popover p-1 shadow-lg"
+                    className="fixed z-[70] max-h-[70vh] w-56 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-lg border bg-popover p-1 shadow-lg"
                   >
                     <div className="p-1">
                       <input
@@ -4284,7 +4296,7 @@ function DatabaseTable({
                   <div
                     role="menu"
                     style={{ top: overflowNewPos.top, left: overflowNewPos.left }}
-                    className="fixed z-[80] w-44 rounded-lg border bg-popover p-1 shadow-lg"
+                    className="fixed z-[80] w-44 max-w-[calc(100vw-1rem)] rounded-lg border bg-popover p-1 shadow-lg"
                   >
                     {VIEW_TYPES.map((option) => {
                       const OptionIcon = option.icon;
@@ -4323,7 +4335,7 @@ function DatabaseTable({
                   <div
                     role="menu"
                     style={{ top: viewMenuPos.top, left: viewMenuPos.left }}
-                    className="fixed z-[70] w-52 rounded-lg border bg-popover p-1 shadow-lg"
+                    className="fixed z-[70] w-52 max-w-[calc(100vw-1rem)] rounded-lg border bg-popover p-1 shadow-lg"
                   >
                     <button
                       type="button"
@@ -4507,7 +4519,7 @@ function DatabaseTable({
                     <div
                       data-filter-chip-popover
                       className={cn(
-                        "fixed z-50 rounded-md border bg-popover p-1 text-left text-sm shadow-md",
+                        "fixed z-50 max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-1 text-left text-sm shadow-md",
                         column.type === "relation" ? "w-64" : "w-44",
                       )}
                       style={{
@@ -4725,7 +4737,7 @@ function DatabaseTable({
                 <div
                   data-filter-bar-popover
                   role="menu"
-                  className="absolute left-0 top-full z-50 mt-1 w-56 rounded-md border bg-popover p-1 text-sm shadow-md"
+                  className="absolute left-0 top-full z-50 mt-1 max-h-[80vh] w-56 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-1 text-sm shadow-md"
                 >
                   {renderFilterPropertyList(() => setIsFilterBarOpen(false))}
                 </div>
@@ -4835,7 +4847,7 @@ function DatabaseTable({
                       columnId={column.id}
                       isAnchor={openColumnEditor === column.id}
                       anchorRef={columnHeaderRef}
-                      className="relative border-b px-3 py-2 font-medium transition-colors hover:bg-accent"
+                      className="relative border-b font-medium transition-colors hover:bg-accent"
                     >
                       <button
                         type="button"
@@ -4850,7 +4862,10 @@ function DatabaseTable({
                         className={cn(
                           // Cursor padrão (a mãozinha comum, igual às abas de
                           // visualização) — o arraste continua funcionando.
-                          "flex w-full items-center gap-1.5 overflow-hidden rounded px-1 py-0.5 text-left",
+                          // O `padding` fica aqui (e não no `<th>`) para o botão
+                          // cobrir a célula inteira: clicar em qualquer ponto do
+                          // cabeçalho abre o editor da propriedade.
+                          "flex w-full items-center gap-1.5 overflow-hidden rounded px-4 py-2.5 text-left",
                           // O título fica sempre à esquerda (inclusive nas
                           // colunas numéricas); o que fica à direita é o valor
                           // na célula, não o nome da propriedade.
@@ -4869,7 +4884,7 @@ function DatabaseTable({
                           // (clicar/rolar as opções não pode virar arraste).
                           onPointerDown={(event) => event.stopPropagation()}
                           className={cn(
-                            "fixed z-30 rounded-md border bg-popover p-3 text-left font-normal text-foreground shadow-md",
+                            "fixed z-30 max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-3 text-left font-normal text-foreground shadow-md",
                             column.type === "status" ? "w-72" : "w-64",
                           )}
                           style={{
@@ -4913,7 +4928,7 @@ function DatabaseTable({
                                 // rolagem: a lista tem 100 ícones e, com o
                                 // flip, ela "pulava" para cima e estourava a
                                 // tela.
-                                className="absolute left-0 top-full z-40 mt-1 h-80 w-64 overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
+                                className="absolute left-0 top-full z-40 mt-1 h-80 w-64 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
                               >
                                 <button
                                   type="button"
@@ -5144,7 +5159,7 @@ function DatabaseTable({
                                 data-prop-edit-menu
                                 ref={propEditMenuSide.ref}
                                 className={cn(
-                                  "absolute z-40 w-full min-w-[280px] rounded-md border bg-popover p-1 shadow-md",
+                                  "absolute z-40 w-full min-w-[280px] max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-1 shadow-md",
                                   propEditMenuSide.className,
                                 )}
                               >
@@ -5179,7 +5194,7 @@ function DatabaseTable({
                                       data-number-format-menu
                                       ref={numberFormatMenuFlip.ref}
                                       className={cn(
-                                        "absolute z-50 max-h-72 w-full min-w-[220px] overflow-y-auto rounded-md border bg-popover p-1 shadow-md",
+                                        "absolute z-50 max-h-72 w-full min-w-[220px] max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-1 shadow-md",
                                         numberFormatMenuFlip.className,
                                       )}
                                     >
@@ -5289,7 +5304,7 @@ function DatabaseTable({
                                       data-decimals-menu
                                       ref={decimalsMenuFlip.ref}
                                       className={cn(
-                                        "absolute z-50 w-full min-w-[220px] rounded-md border bg-popover p-1 shadow-md",
+                                        "absolute z-50 w-full min-w-[220px] max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-1 shadow-md",
                                         decimalsMenuFlip.className,
                                       )}
                                     >
@@ -5356,7 +5371,7 @@ function DatabaseTable({
                                       data-calc-menu
                                       ref={calcMenuFlip.ref}
                                       className={cn(
-                                        "absolute z-50 max-h-72 w-full min-w-[220px] overflow-y-auto rounded-md border bg-popover p-1 shadow-md",
+                                        "absolute z-50 max-h-72 w-full min-w-[220px] max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-1 shadow-md",
                                         calcMenuFlip.className,
                                       )}
                                     >
@@ -5425,7 +5440,7 @@ function DatabaseTable({
                                 data-status-options
                                 ref={statusOptionsSide.ref}
                                 className={cn(
-                                  "absolute top-0 z-40 max-h-[70vh] w-80 overflow-y-auto rounded-md border bg-popover p-3 text-left shadow-lg",
+                                  "absolute top-0 z-40 max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-3 text-left shadow-lg",
                                   statusOptionsSide.className,
                                 )}
                               >
@@ -5445,7 +5460,7 @@ function DatabaseTable({
                                 data-select-options
                                 ref={selectOptionsSide.ref}
                                 className={cn(
-                                  "absolute top-0 z-40 max-h-[70vh] w-80 overflow-y-auto rounded-md border bg-popover p-3 text-left shadow-lg",
+                                  "absolute top-0 z-40 max-h-[70vh] w-80 max-w-[calc(100vw-1rem)] overflow-y-auto rounded-md border bg-popover p-3 text-left shadow-lg",
                                   selectOptionsSide.className,
                                 )}
                               >
@@ -5730,7 +5745,7 @@ function DatabaseTable({
               // Mesmo visual do cabeçalho em hover, ocupando **toda a largura**
               // da coluna (a célula inteira) e seguindo o cursor.
               <div
-                className="flex items-center gap-1.5 border bg-accent px-3 py-2 text-xs font-medium text-foreground shadow-lg"
+                className="flex items-center gap-1.5 border bg-accent px-4 py-2 text-xs font-medium text-foreground shadow-lg"
                 style={{
                   width: draggingColumnBox?.width ?? columnWidth(draggingColumn),
                   height: draggingColumnBox?.height,
@@ -5796,7 +5811,10 @@ function DatabaseTable({
       {openRow ? (
         <div
           className={cn(
-            "inset-0 z-50 flex bg-black/40",
+            // No celular (`< md`) a página ocupa a tela toda: sem padding no
+            // overlay, ignorando a preferência centralizada/à direita (que
+            // continua valendo a partir de `md`).
+            "inset-0 z-50 flex bg-black/40 max-md:p-0",
             // Como a página é aberta (preferência por database):
             // `full` fica **dentro da área do conteúdo** (a sidebar e o cabeçalho
             // do app continuam visíveis); `center` = painel flutuante no centro;
@@ -5812,6 +5830,9 @@ function DatabaseTable({
           <div
             className={cn(
               "flex h-full w-full flex-col overflow-hidden border bg-card shadow-xl",
+              // No celular os três layouts ficam iguais: painel de tela cheia,
+              // sem largura máxima, cantos ou bordas.
+              "max-md:max-w-none max-md:rounded-none max-md:border-0",
               pageLayout === "full" && "rounded-none border-0",
               pageLayout === "center" && "max-w-[60vw] rounded-lg",
               pageLayout === "right" &&
@@ -5926,7 +5947,17 @@ function DatabaseTable({
  * otimistas: o estado local é atualizado na hora e a escrita roda em background,
  * com refetch para reverter em caso de erro.
  */
-export function DatabaseView({ userName }: { userName?: string }) {
+export function DatabaseView({
+  userName,
+  mobileNavOpen = false,
+  onCloseMobileNav,
+}: {
+  userName?: string;
+  /** Gaveta off-canvas do celular aberta (repassada à `ProjectsSidebar`). */
+  mobileNavOpen?: boolean;
+  /** Fecha a gaveta do celular ao navegar (repassada à `ProjectsSidebar`). */
+  onCloseMobileNav?: () => void;
+}) {
   const [databases, setDatabases] = useState<DatabaseModel[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   /** Categorias de projetos do usuário (compartilhadas e ordenadas por `position`). */
@@ -6892,8 +6923,10 @@ export function DatabaseView({ userName }: { userName?: string }) {
       const target = databases.find((d) => d.id === id);
       if (target?.projectId) setActiveProjectId(target.projectId);
       setSelectedId(id);
+      // Abrir/trocar de database fecha a gaveta do celular (revela a tabela).
+      onCloseMobileNav?.();
     },
-    [databases, setActiveProjectId],
+    [databases, onCloseMobileNav, setActiveProjectId],
   );
 
   /**
@@ -6962,6 +6995,8 @@ export function DatabaseView({ userName }: { userName?: string }) {
           onUpdateCategory={handleUpdateCategory}
           onDeleteCategory={handleDeleteCategory}
           onDeleteProject={handleDeleteProject}
+          mobileOpen={mobileNavOpen}
+          onCloseMobile={onCloseMobileNav}
         />
         <WorkspaceEmptyState
           variant="no-projects"
@@ -7003,6 +7038,8 @@ export function DatabaseView({ userName }: { userName?: string }) {
           onUpdateCategory={handleUpdateCategory}
           onDeleteCategory={handleDeleteCategory}
           onDeleteProject={handleDeleteProject}
+          mobileOpen={mobileNavOpen}
+          onCloseMobile={onCloseMobileNav}
         />
         {projectHasDatabases ? (
           <WorkspaceEmptyState
@@ -7053,6 +7090,8 @@ export function DatabaseView({ userName }: { userName?: string }) {
         onUpdateCategory={handleUpdateCategory}
         onDeleteCategory={handleDeleteCategory}
         onDeleteProject={handleDeleteProject}
+        mobileOpen={mobileNavOpen}
+        onCloseMobile={onCloseMobileNav}
       />
       {/* Área do conteúdo (ao lado da sidebar). É `relative` para o layout
           "Página inteira" ancorar a página do item aqui dentro, mantendo a

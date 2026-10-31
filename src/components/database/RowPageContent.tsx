@@ -123,7 +123,7 @@ export function RowPageContent({
 
   return (
     <>
-      <div className="mb-3 flex items-center gap-2 border-b py-3 pl-[3.75rem] pr-5">
+      <div className="mb-3 flex items-center gap-2 border-b py-3 pl-3 pr-3 md:pl-[3.75rem] md:pr-5">
         <FileText className="h-4 w-4 text-muted-foreground" />
         <span className="text-base font-semibold">{rowTitle}</span>
         <button
@@ -137,7 +137,7 @@ export function RowPageContent({
       </div>
 
       <div className="no-scrollbar min-h-0 flex-1 overflow-y-auto px-5 pb-5">
-      <div className="flex flex-col pl-[2.5rem] pr-[2.5rem]">
+      <div className="flex flex-col pl-3 pr-3 md:pl-[2.5rem] md:pr-[2.5rem]">
         {columns.map((column, index) => {
           const raw = cellOf(row, column.id);
           const isList = Array.isArray(raw);
@@ -247,14 +247,14 @@ export function RowPageContent({
                     }
                   }}
                   aria-label="Nome da propriedade"
-                  className="w-32 flex-none rounded bg-transparent px-1 text-sm text-foreground outline-none focus:bg-accent"
+                  className="w-24 flex-none rounded bg-transparent px-1 text-sm text-foreground outline-none focus:bg-accent md:w-32"
                 />
               ) : (
                 <button
                   type="button"
                   data-prop-menu-trigger
                   onClick={openMenu}
-                  className="w-32 flex-none truncate text-left text-muted-foreground hover:text-foreground"
+                  className="w-24 flex-none truncate text-left text-muted-foreground hover:text-foreground md:w-32"
                 >
                   {column.name}
                 </button>
@@ -263,7 +263,7 @@ export function RowPageContent({
                 <div
                   data-prop-menu
                   role="menu"
-                  className="fixed z-50 w-52 rounded-md border bg-popover p-1 text-left text-sm shadow-md"
+                  className="fixed z-50 w-52 max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-1 text-left text-sm shadow-md"
                   style={{ top: menuPos.top, left: menuPos.left }}
                 >
                   <button
@@ -363,7 +363,7 @@ export function RowPageContent({
               {valueColId === column.id && valuePos ? (
                 <div
                   data-value-popover
-                  className="fixed z-50 w-56 rounded-md border bg-popover p-1 text-left text-sm shadow-md"
+                  className="fixed z-50 w-56 max-w-[calc(100vw-1rem)] rounded-md border bg-popover p-1 text-left text-sm shadow-md"
                   style={{ top: valuePos.top, left: valuePos.left }}
                 >
                   {column.type === "select" || column.type === "status" ? (

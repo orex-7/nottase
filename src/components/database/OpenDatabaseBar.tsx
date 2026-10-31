@@ -55,7 +55,9 @@ export function OpenDatabaseBar({
   return (
     <div
       ref={barRef}
-      className="flex h-7 shrink-0 items-stretch gap-2 border-b bg-card px-4"
+      // Escondida no celular: a troca de database acontece pela gaveta da
+      // sidebar; a faixa de abas volta a partir de `md`.
+      className="flex h-7 shrink-0 items-stretch gap-2 border-b bg-card px-4 max-md:hidden"
     >
       <div
         className="no-scrollbar flex min-w-0 items-stretch overflow-x-auto"

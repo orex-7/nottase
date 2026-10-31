@@ -107,6 +107,14 @@ interface ProjectsSidebarProps {
   onDeleteCategory: (id: string) => void;
   /** Exclui um projeto (e, em cascata, os databases vinculados a ele). */
   onDeleteProject: (id: string) => void;
+  /**
+   * No celular a sidebar vira uma gaveta off-canvas; `mobileOpen` controla sua
+   * visibilidade. Opcional para não quebrar quem renderiza o componente sem o
+   * drawer (testes/desktop) — no desktop a gaveta nunca é usada.
+   */
+  mobileOpen?: boolean;
+  /** Fecha a gaveta do celular ao navegar (abrir projeto/database/busca). */
+  onCloseMobile?: () => void;
 }
 /**
  * Popover de **gerenciamento de categorias** aberto pelo botão de ícone da
@@ -615,6 +623,8 @@ export function ProjectsSidebar({
   onUpdateCategory,
   onDeleteCategory,
   onDeleteProject,
+  mobileOpen = false,
+  onCloseMobile,
 }: ProjectsSidebarProps) {
   /** Estado de minimização da sidebar (persistido em localStorage). */
   const [collapsed, setCollapsed] = useState(false);
@@ -872,6 +882,14 @@ export function ProjectsSidebar({
     });
   }, []);
 
+  /**
+   * Fecha a gaveta do celular após uma navegação. No desktop não há gaveta, e
+   * `onCloseMobile` é opcional — chamar é inofensivo.
+   */
+  const closeMobile = useCallback(() => {
+    onCloseMobile?.();
+  }, [onCloseMobile]);
+
   const toggleGroup = useCallback((name: string) => {
     setCollapsedGroups((prev) => {
       const next = new Set(prev);
@@ -976,13 +994,18 @@ export function ProjectsSidebar({
         });
         return;
       }
+      // Navegação: fecha a gaveta do celular para revelar o destino.
+      closeMobile();
       onOpenSearchResult?.(result);
     },
-    [onOpenSearchResult],
+    [closeMobile, onOpenSearchResult],
   );
 
   // Estado minimizado: rail estreito apenas com os controles essenciais.
-  if (collapsed) {
+  // No celular a gaveta sempre mostra a versão expandida (o rail só expõe 4
+  // ícones), então `mobileOpen` ignora `collapsed` — que continua valendo no
+  // desktop e permanece intacto no localStorage.
+  if (collapsed && !mobileOpen) {
     return (
       <aside
         ref={asideRef}
@@ -1052,7 +1075,15 @@ export function ProjectsSidebar({
       // `overflow-y-auto` (e não `scroll`): a barra só existe quando o conteúdo
       // realmente passa da altura. O `scrollbar-gutter: stable` do
       // `.scrollbar-stable` mantém o espaço reservado, então nada desloca.
-      className="scrollbar-stable hidden w-60 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-sidebar p-3 md:flex"
+      className={cn(
+        "scrollbar-stable flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-sidebar p-3 transition-transform md:w-60",
+        // Off-canvas no celular (gaveta sobre o conteúdo); a partir de `md`
+        // volta ao fluxo normal, estática e sem deslocamento. No celular a
+        // gaveta é um pouco mais larga e ganha folga à direita.
+        "fixed inset-y-0 left-0 z-50 md:static md:z-auto md:translate-x-0",
+        "max-md:pr-5",
+        mobileOpen ? "translate-x-0" : "-translate-x-full",
+      )}
     >
       {/* O cabeçalho e a lista avançam 12px sobre o padding/gutter da sidebar
           (`-mr-3`) para que a borda direita das linhas fique alinhada com o
@@ -1101,9 +1132,18 @@ export function ProjectsSidebar({
 
             <button
               type="button"
-              onClick={toggleCollapsed}
-              aria-label="Minimizar sidebar de projetos"
-              title="Minimizar sidebar de projetos"
+              // No celular não existe estado "minimizado" (a gaveta sempre abre
+              // expandida): o botão fecha o drawer. No desktop, minimiza.
+              onClick={() => {
+                if (mobileOpen) closeMobile();
+                else toggleCollapsed();
+              }}
+              aria-label={
+                mobileOpen ? "Fechar navegação" : "Minimizar sidebar de projetos"
+              }
+              title={
+                mobileOpen ? "Fechar navegação" : "Minimizar sidebar de projetos"
+              }
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <PanelLeftClose className="h-4 w-4" />
@@ -1366,6 +1406,8 @@ export function ProjectsSidebar({
           onCancel={() => setCreateAnchor(null)}
           onCreateCategory={onCreateCategory}
           onConfirm={(input) => {
+            // Criar um projeto entra nele: fecha a gaveta do celular.
+            closeMobile();
             onCreateProject(input);
             setCreateAnchor(null);
           }}
@@ -1404,6 +1446,7 @@ export function ProjectsSidebar({
             const db = databases.find((d) => d.id === id);
             const projectId = projectAnchor.project.id;
             setProjectAnchor(null);
+            closeMobile();
             onOpenSearchResult?.({
               kind: "database",
               id,
@@ -1415,6 +1458,7 @@ export function ProjectsSidebar({
           onOpenProject={() => {
             const id = projectAnchor.project.id;
             setProjectAnchor(null);
+            closeMobile();
             onOpenProject(id);
           }}
           onCreateDatabase={() => {

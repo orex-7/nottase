@@ -41,6 +41,13 @@ interface CalendarSidebarProps {
   onOpenDatabase: (id: string) => void;
   /** Cria um novo database e abre a tela de database. */
   onCreateDatabase: () => void;
+  /**
+   * No celular a sidebar vira uma gaveta off-canvas; `mobileOpen` controla sua
+   * visibilidade. Opcional — no desktop a gaveta nunca é usada.
+   */
+  mobileOpen?: boolean;
+  /** Fecha a gaveta do celular ao navegar (selecionar dia/abrir database). */
+  onCloseMobile?: () => void;
 }
 
 /**
@@ -61,6 +68,8 @@ export function CalendarSidebar({
   onToday,
   onOpenDatabase,
   onCreateDatabase,
+  mobileOpen = false,
+  onCloseMobile,
 }: CalendarSidebarProps) {
   const monthDate = new Date(year, month, 1);
   const weeks = getMonthMatrix(monthDate);
@@ -94,6 +103,11 @@ export function CalendarSidebar({
     });
     setIsDbMenuOpen(false);
   }, []);
+
+  /** Fecha a gaveta do celular após uma navegação (no desktop é inofensivo). */
+  const closeMobile = useCallback(() => {
+    onCloseMobile?.();
+  }, [onCloseMobile]);
 
   // Carrega a lista de databases ao abrir o popover (sempre fresca).
   useEffect(() => {
@@ -138,11 +152,14 @@ export function CalendarSidebar({
 
   const handleCreateDatabase = useCallback(() => {
     setIsDbMenuOpen(false);
+    closeMobile();
     onCreateDatabase();
-  }, [onCreateDatabase]);
+  }, [closeMobile, onCreateDatabase]);
 
   // Estado minimizado: rail estreito apenas com os controles essenciais.
-  if (collapsed) {
+  // No celular a gaveta sempre mostra a versão expandida, então `mobileOpen`
+  // ignora `collapsed` — que segue valendo no desktop.
+  if (collapsed && !mobileOpen) {
     return (
       <aside className="hidden shrink-0 flex-col items-center gap-2 border-r bg-sidebar p-2 md:flex">
         <button
@@ -168,7 +185,17 @@ export function CalendarSidebar({
   }
 
   return (
-    <aside className="hidden w-64 shrink-0 flex-col gap-3 border-r bg-sidebar p-3 md:flex">
+    <aside
+      className={cn(
+        "flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-sidebar p-3 transition-transform md:w-64",
+        // Off-canvas no celular (gaveta sobre o conteúdo); a partir de `md`
+        // volta ao fluxo normal, estática e sem deslocamento. No celular a
+        // gaveta é um pouco mais larga e ganha folga à direita.
+        "fixed inset-y-0 left-0 z-50 md:static md:z-auto md:translate-x-0",
+        "max-md:pr-5",
+        mobileOpen ? "translate-x-0" : "-translate-x-full",
+      )}
+    >
       {/* Mini-calendário do mês atual */}
       <section className="rounded-lg border bg-card p-2 shadow-sm">
         <header className="mb-1 flex items-center justify-between px-1">
@@ -201,9 +228,14 @@ export function CalendarSidebar({
             </button>
             <button
               type="button"
-              onClick={toggleCollapsed}
-              aria-label="Minimizar sidebar"
-              title="Minimizar sidebar"
+              // No celular não existe estado "minimizado" (a gaveta sempre abre
+              // expandida): o botão fecha o drawer. No desktop, minimiza.
+              onClick={() => {
+                if (mobileOpen) closeMobile();
+                else toggleCollapsed();
+              }}
+              aria-label={mobileOpen ? "Fechar navegação" : "Minimizar sidebar"}
+              title={mobileOpen ? "Fechar navegação" : "Minimizar sidebar"}
               className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
             >
               <PanelLeftClose className="h-4 w-4" />
@@ -231,7 +263,11 @@ export function CalendarSidebar({
               <button
                 key={dateKey}
                 type="button"
-                onClick={() => onSelectDate(dateKey)}
+                onClick={() => {
+                  // Selecionar um dia revela o calendário: fecha a gaveta.
+                  closeMobile();
+                  onSelectDate(dateKey);
+                }}
                 aria-label={dateKey}
                 className={cn(
                   "relative flex h-7 flex-col items-center justify-center rounded text-xs transition-colors",
@@ -268,7 +304,10 @@ export function CalendarSidebar({
               <li key={db.id} className="group/db relative">
                 <button
                   type="button"
-                  onClick={() => onOpenDatabase(db.id)}
+                  onClick={() => {
+                    closeMobile();
+                    onOpenDatabase(db.id);
+                  }}
                   title={db.name}
                   className="flex w-full items-center gap-2 rounded px-2 py-1.5 pr-7 text-left text-sm hover:bg-accent"
                 >

@@ -230,6 +230,19 @@ describe("DatabaseView — estado vazio", () => {
     ).not.toBeInTheDocument();
   });
 
+  it("abre a gaveta da sidebar no layout da tabela (mobileNavOpen)", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([DATABASE]);
+
+    const { container } = render(<DatabaseView userName="Ana" mobileNavOpen />);
+
+    // Com a tabela aberta (layout principal), a sidebar é a gaveta e deve estar
+    // deslizada para dentro quando `mobileNavOpen` está ligado.
+    await screen.findByText("Nome");
+    const aside = container.querySelector("aside");
+    expect(aside?.className.split(/\s+/)).toContain("translate-x-0");
+  });
+
   it("restaura a navegação salva entre databases abertos", async () => {
     fetchProjectsMock.mockResolvedValue([PROJECT]);
     fetchDatabasesMock.mockResolvedValue([DATABASE, DATABASE2]);

@@ -50,7 +50,8 @@ const VARIANTS: Record<"compact" | "comfortable", VariantStyles> = {
     dayBadge: "h-6 w-6",
     dayText: "text-xs",
     headerText: "text-base",
-    padding: "p-1.5",
+    // Células mais estreitas no celular: menos padding até `sm`.
+    padding: "p-1 sm:p-1.5",
   },
 };
 

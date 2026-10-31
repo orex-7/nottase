@@ -204,7 +204,7 @@ export function EventDetails({
           />
         </div>
 
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="space-y-1.5">
             <Label htmlFor="details-date">Data de início</Label>
             <Input
@@ -243,7 +243,7 @@ export function EventDetails({
         </label>
 
         {!values.allDay ? (
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
             <div className="space-y-1.5">
               <Label htmlFor="details-startTime">Início</Label>
               <Input
