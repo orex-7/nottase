@@ -24,7 +24,14 @@ export default async function AppPage() {
     null;
 
   return (
-    <main className="flex h-screen flex-col overflow-hidden bg-background">
+    // `100dvh` (viewport dinâmica) acompanha a barra do navegador do celular
+    // (Safari/iOS), evitando que o rodapé fixo ("Nova linha") fique escondido
+    // atrás dela. Declarado inline de propósito: se o navegador não suportar
+    // `dvh`, a declaração é descartada e o `h-screen` (100vh) do className vale.
+    <main
+      className="flex h-screen flex-col overflow-hidden bg-background"
+      style={{ height: "100dvh" }}
+    >
       <CalendarProvider
         userName={displayName}
         userEmail={user?.email ?? ""}
