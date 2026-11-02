@@ -105,7 +105,7 @@ export function SelectOptionsEditor({
   }
 
   return (
-    <div className="space-y-1.5 rounded border bg-muted/30 p-2">
+    <div className="space-y-1.5">
       {options.length === 0 ? (
         <p className="px-1 py-1 text-xs text-muted-foreground">Nenhuma opção ainda.</p>
       ) : (

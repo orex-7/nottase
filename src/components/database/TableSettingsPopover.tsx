@@ -4,8 +4,10 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeft,
+  ArrowLeftRight,
   Check,
   ChevronDown,
+  CircleDashed,
   ChevronRight,
   Eye,
   EyeOff,
@@ -14,7 +16,6 @@ import {
   Settings2,
   SlidersHorizontal,
   Table2,
-  Tags,
   Trash2,
   X,
   Zap,
@@ -25,7 +26,6 @@ import {
   RELATION_LIMITS,
   ROLLUP_FUNCTIONS,
   columnIcon,
-  columnTypeMeta,
   editableOptionsForColumn,
 } from "@/components/database/database-fields";
 import {
@@ -155,10 +155,19 @@ export function TableSettingsPopover({
   const [openTypeFor, setOpenTypeFor] = useState<string | null>(null);
   /** Tela interna ativa do popover. */
   const [view, setView] = useState<
-    "menu" | "edit" | "visibility" | "layout" | "automations"
+    "menu" | "edit" | "property" | "visibility" | "layout" | "automations"
   >("menu");
-  /** Id da coluna cujo editor de opções (select/multi_select) está aberto. */
-  const [openOptionsFor, setOpenOptionsFor] = useState<string | null>(null);
+  /** Coluna cujas configurações estão abertas na tela "property". */
+  const [editingColumnId, setEditingColumnId] = useState<string | null>(null);
+  /** Busca de propriedades na tela "edit". */
+  const [propertySearch, setPropertySearch] = useState("");
+  /** Id da coluna cujo seletor de ícone (da propriedade) está aberto. */
+  const [propIconFor, setPropIconFor] = useState<string | null>(null);
+  /** Posição (viewport) do seletor de ícone da propriedade. */
+  const [propIconPos, setPropIconPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
   /** Seletor de icone do database (ao lado do input de nome) esta aberto. */
   const [iconPickerOpen, setIconPickerOpen] = useState(false);
   /** Botao do icone do database, usado para ancorar o seletor flutuante. */
@@ -198,6 +207,25 @@ export function TableSettingsPopover({
     setIconPickerOpen(true);
   };
 
+  /** Abre/fecha o seletor de ícone de uma **propriedade**, ancorado no botão
+   *  clicado (mesma técnica do ícone do database). */
+  const togglePropertyIcon = (columnId: string, el: HTMLElement) => {
+    if (propIconFor === columnId) {
+      setPropIconFor(null);
+      setPropIconPos(null);
+      return;
+    }
+    const rect = el.getBoundingClientRect();
+    const pickerWidth = 256;
+    const margin = 8;
+    const left = Math.min(
+      Math.max(margin, rect.left),
+      Math.max(margin, window.innerWidth - pickerWidth - margin),
+    );
+    setPropIconPos({ top: rect.bottom + 6, left });
+    setPropIconFor(columnId);
+  };
+
   // Ao reabrir o popover, volta para a tela inicial e **fecha os sub-popovers**:
   // o seletor de ícone é um portal (não é filho do popover), então sem isso ele
   // reaparecia aberto depois de fechar e reabrir as configurações.
@@ -208,8 +236,11 @@ export function TableSettingsPopover({
     setIconPickerOpen(false);
     setIconPickerPos(null);
     setOpenTypeFor(null);
-    setOpenOptionsFor(null);
     setConfirmDelete(false);
+    setEditingColumnId(null);
+    setPropertySearch("");
+    setPropIconFor(null);
+    setPropIconPos(null);
   }, [open, initialView]);
 
   /** Posição (top/right) do popover, ancorado abaixo do botão de configurações. */
@@ -227,6 +258,18 @@ export function TableSettingsPopover({
 
   /** Icone atual do database (resolvido a partir do nome persistido). */
   const ActiveIcon = databaseIcon(icon);
+
+  /** Coluna cujas configurações estão abertas na tela "property". */
+  const editingColumn = columns.find((c) => c.id === editingColumnId) ?? null;
+
+  /** Ícone atual da propriedade cujo seletor está aberto (para marcar o ativo). */
+  const propIcon = columns.find((c) => c.id === propIconFor)?.icon ?? null;
+
+  /** Propriedades filtradas pela busca (tela "edit"). */
+  const searchTerm = propertySearch.trim().toLowerCase();
+  const visibleColumns = searchTerm
+    ? columns.filter((c) => c.name.toLowerCase().includes(searchTerm))
+    : columns;
 
   /**
    * Visões vinculadas não recebem automações: elas não têm linhas próprias (o
@@ -257,7 +300,9 @@ export function TableSettingsPopover({
           {view !== "menu" ? (
             <button
               type="button"
-              onClick={() => setView("menu")}
+              // Da tela de uma propriedade volta para a lista de propriedades;
+              // das demais, volta ao menu principal.
+              onClick={() => setView(view === "property" ? "edit" : "menu")}
               aria-label="Voltar"
               title="Voltar"
               className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -272,11 +317,13 @@ export function TableSettingsPopover({
               ? "Configurações da tabela"
               : view === "edit"
                 ? "Editar propriedades"
-                : view === "layout"
-                  ? "Layout"
-                  : view === "automations"
-                    ? "Automações"
-                    : "Visibilidade de propriedades"}
+                : view === "property"
+                  ? (editingColumn?.name ?? "Propriedade")
+                  : view === "layout"
+                    ? "Layout"
+                    : view === "automations"
+                      ? "Automações"
+                      : "Visibilidade de propriedades"}
           </span>
           <button
             type="button"
@@ -396,25 +443,52 @@ export function TableSettingsPopover({
             </>
           ) : view === "edit" ? (
             <div className="space-y-2 mb-2">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                  Propriedades
-                </span>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="ml-auto"
-                  onClick={onAddColumn}
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Adicionar propriedade
-                </Button>
-              </div>
+              <Input
+                value={propertySearch}
+                onChange={(e) => setPropertySearch(e.target.value)}
+                placeholder="Buscar propriedade"
+                aria-label="Buscar propriedade"
+              />
+              <ul className="space-y-0.5">
+                {visibleColumns.map((column) => {
+                  const TypeIcon = columnIcon(column);
+                  return (
+                    <li key={column.id}>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingColumnId(column.id);
+                          setView("property");
+                        }}
+                        className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
+                      >
+                        <TypeIcon className="h-4 w-4 flex-none text-muted-foreground" />
+                        <span className="flex-1 truncate text-[13px] font-medium">
+                          {column.name}
+                        </span>
+                        <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                      </button>
+                    </li>
+                  );
+                })}
+                {visibleColumns.length === 0 ? (
+                  <li className="px-2.5 py-1.5 text-sm text-muted-foreground">
+                    Nenhuma propriedade encontrada.
+                  </li>
+                ) : null}
+              </ul>
+            </div>
+          ) : view === "property" ? (
+            <div className="space-y-2 mb-2">
               <ul className="space-y-1.5">
-              {columns.map((column) => {
-                const meta = columnTypeMeta(column.type);
+              {columns.filter((c) => c.id === editingColumnId).map((column) => {
                 const TypeIcon = columnIcon(column);
                 const isTypeOpen = openTypeFor === column.id;
+                /** Propriedades com lista de opções (seleção/status). */
+                const hasOptions =
+                  column.type === "select" ||
+                  column.type === "status" ||
+                  column.type === "multi_select";
                 /**
                  * Databases que podem ser alvo de uma relação: exceto o atual e as
                  * **visões vinculadas** (não têm colunas próprias para resolver).
@@ -463,30 +537,44 @@ export function TableSettingsPopover({
                 return (
                   <li
                     key={column.id}
-                    className="flex flex-wrap items-center gap-2 rounded border bg-background px-2 py-1.5"
+                    className="flex flex-wrap items-center gap-2 px-2 py-1.5"
                   >
-                    <TypeIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                    <button
+                      type="button"
+                      onClick={(e) =>
+                        togglePropertyIcon(column.id, e.currentTarget)
+                      }
+                      aria-haspopup="menu"
+                      aria-expanded={propIconFor === column.id}
+                      title="Escolher ícone da propriedade"
+                      aria-label={`Ícone da propriedade ${column.name}`}
+                      className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded border text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <TypeIcon className="h-4 w-4" />
+                    </button>
                     <Input
                       value={column.name}
                       onChange={(e) => onUpdateColumn(column.id, { name: e.target.value })}
-                      className="min-w-0 flex-1 border-0 px-1 shadow-none"
+                      className="min-w-0 flex-1 px-2"
                       aria-label={`Nome da propriedade ${column.name}`}
                     />
-                    <div className="relative">
+                    {/* "Alterar tipo" abaixo do input. */}
+                    <div className="relative basis-full">
                       <button
                         type="button"
                         onClick={() =>
                           setOpenTypeFor((cur) => (cur === column.id ? null : column.id))
                         }
-                        className="flex h-[30px] items-center gap-1 rounded px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
-                        aria-label={`Tipo da propriedade ${column.name}`}
+                        className="flex h-[30px] items-center gap-1.5 rounded px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                        aria-label={`Alterar tipo da propriedade ${column.name}`}
                         title="Alterar tipo"
                       >
-                        {meta.label}
+                        <ArrowLeftRight className="h-3.5 w-3.5" />
+                        Alterar tipo
                         <ChevronDown className="h-3 w-3" />
                       </button>
                       {isTypeOpen ? (
-                        <div className="absolute right-0 top-8 z-10 w-48 overflow-hidden rounded-md border bg-popover py-1 shadow-lg">
+                        <div className="absolute left-0 top-8 z-10 w-48 overflow-hidden rounded-md border bg-popover py-1 shadow-lg">
                           {COLUMN_TYPES.map((t) => {
                             const OptIcon = t.icon;
                             return (
@@ -510,27 +598,20 @@ export function TableSettingsPopover({
                         </div>
                       ) : null}
                     </div>
-                    {column.type === "select" ||
-                    column.type === "status" ||
-                    column.type === "multi_select" ? (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          setOpenOptionsFor((cur) => (cur === column.id ? null : column.id))
-                        }
-                        aria-label={`Editar opções de ${column.name}`}
-                        aria-expanded={openOptionsFor === column.id}
-                        title="Editar opções"
-                        className={cn(
-                          "flex h-7 flex-none items-center gap-1 rounded px-2 text-xs hover:bg-accent hover:text-foreground",
-                          openOptionsFor === column.id
-                            ? "bg-accent text-foreground"
-                            : "text-muted-foreground",
-                        )}
-                      >
-                        <Tags className="h-3.5 w-3.5" />
-                        Opções
-                      </button>
+                    {hasOptions ? (
+                      <div className="basis-full">
+                        {/* Divisória + rótulo separando o nome das opções. */}
+                        <div className="my-1.5 h-px bg-border" />
+                        <span className="mb-1 block text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+                          Opções
+                        </span>
+                        <SelectOptionsEditor
+                          options={editableOptionsForColumn(column)}
+                          onChange={(options) =>
+                            onUpdateColumn(column.id, { options })
+                          }
+                        />
+                      </div>
                     ) : null}
                     {column.type === "relation" ? (
                       <div className="basis-full space-y-1.5">
@@ -754,40 +835,6 @@ export function TableSettingsPopover({
                         </Button>
                       </div>
                     ) : null}
-                    <button
-                      type="button"
-                      onClick={() => onUpdateColumn(column.id, { hidden: !column.hidden })}
-                      aria-label={`${column.hidden ? "Mostrar" : "Ocultar"} propriedade ${column.name}`}
-                      aria-pressed={!column.hidden}
-                      title={column.hidden ? "Mostrar propriedade" : "Ocultar propriedade"}
-                      className={cn(
-                        "flex h-[30px] w-[30px] flex-none items-center justify-center rounded hover:bg-accent",
-                        column.hidden ? "text-muted-foreground" : "text-foreground",
-                      )}
-                    >
-                      {column.hidden ? (
-                        <EyeOff className="h-3.5 w-3.5" />
-                      ) : (
-                        <Eye className="h-3.5 w-3.5" />
-                      )}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => onRemoveColumn(column.id)}
-                      aria-label={`Excluir propriedade ${column.name}`}
-                      title="Excluir propriedade"
-                      className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                    {openOptionsFor === column.id ? (
-                      <div className="basis-full">
-                        <SelectOptionsEditor
-                          options={editableOptionsForColumn(column)}
-                          onChange={(options) => onUpdateColumn(column.id, { options })}
-                        />
-                      </div>
-                    ) : null}
                   </li>
                 );
               })}
@@ -881,7 +928,7 @@ export function TableSettingsPopover({
                   return (
                     <li
                       key={column.id}
-                      className="flex items-center gap-2 rounded border bg-background px-2 py-1.5"
+                      className="flex items-center gap-2 rounded border px-2 py-1.5"
                     >
                       <TypeIcon className="h-3.5 w-3.5 flex-none text-muted-foreground" />
                       <span className="flex-1 truncate text-sm">{column.name}</span>
@@ -910,8 +957,39 @@ export function TableSettingsPopover({
               </ul>
             </div>
           )}
-          {/* Excluir tabela — mesmo estilo dos botões de propriedades acima. */}
-          {confirmDelete ? (
+          {/* Adicionar propriedade — no rodapé, acima de "Excluir tabela" e com
+              uma divisória separando da lista de propriedades. */}
+          {view === "edit" ? (
+            <div className="mt-2 border-t pt-2">
+              <button
+                type="button"
+                onClick={onAddColumn}
+                className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
+              >
+                <Plus className="h-4 w-4 flex-none text-muted-foreground" />
+                <span className="flex-1 text-[13px] font-medium">
+                  Adicionar propriedade
+                </span>
+              </button>
+            </div>
+          ) : null}
+          {/* No rodapé da tela de uma propriedade o botão exclui a propriedade;
+              nas demais telas, exclui a tabela. */}
+          {view === "property" && editingColumn ? (
+            <button
+              type="button"
+              onClick={() => {
+                onRemoveColumn(editingColumn.id);
+                setView("edit");
+              }}
+              className="group flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent hover:text-destructive"
+            >
+              <Trash2 className="h-4 w-4 flex-none text-muted-foreground group-hover:text-destructive" />
+              <span className="flex-1 text-[13px] font-medium">
+                Excluir propriedade
+              </span>
+            </button>
+          ) : confirmDelete ? (
             <div className="flex flex-wrap items-center gap-2 rounded px-2.5 py-1.5 hover:bg-destructive/10">
               <span className="text-sm text-muted-foreground">
                 Excluir a tabela e todos os itens? Essa ação é permanente.
@@ -999,6 +1077,70 @@ export function TableSettingsPopover({
                         onUpdateIcon(option.name);
                         setIconPickerOpen(false);
                         setIconPickerPos(null);
+                      }}
+                      className={cn(
+                        "flex h-8 w-8 items-center justify-center rounded hover:bg-accent",
+                        isActive
+                          ? "bg-accent text-foreground"
+                          : "text-muted-foreground",
+                      )}
+                    >
+                      <OptionIcon className="h-4 w-4" />
+                    </button>
+                  );
+                })}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {/* Seletor de ícone de uma **propriedade** (mesma técnica do database). */}
+      {propIconFor && propIconPos
+        ? createPortal(
+            <div
+              data-prop-icon-picker
+              style={{
+                top: propIconPos.top,
+                left: propIconPos.left,
+                maxHeight: Math.max(
+                  160,
+                  window.innerHeight - propIconPos.top - 8,
+                ),
+              }}
+              className="fixed z-[70] w-64 overflow-y-auto rounded-md border bg-popover p-2 shadow-md"
+              role="menu"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <button
+                type="button"
+                onClick={() => {
+                  onUpdateColumn(propIconFor, { icon: undefined });
+                  setPropIconFor(null);
+                  setPropIconPos(null);
+                }}
+                className={cn(
+                  "mb-1 flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                  !propIcon ? "text-foreground" : "text-muted-foreground",
+                )}
+              >
+                <CircleDashed className="h-4 w-4" />
+                Automático
+              </button>
+              <div className="grid grid-cols-6 gap-1">
+                {ICON_OPTIONS.map((option) => {
+                  const OptionIcon = option.icon;
+                  const isActive = propIcon === option.name;
+                  return (
+                    <button
+                      key={option.name}
+                      type="button"
+                      title={option.name}
+                      aria-label={option.name}
+                      aria-pressed={isActive}
+                      onClick={() => {
+                        onUpdateColumn(propIconFor, { icon: option.name });
+                        setPropIconFor(null);
+                        setPropIconPos(null);
                       }}
                       className={cn(
                         "flex h-8 w-8 items-center justify-center rounded hover:bg-accent",
