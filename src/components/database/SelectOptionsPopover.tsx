@@ -12,7 +12,6 @@ import {
 } from "@/components/database/database-fields";
 import { markOptionDrag, moveOption, OPTION_DROP_BAR } from "@/components/database/option-dnd";
 import { OptionColorPopover } from "@/components/database/OptionColorPopover";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
 import type { SelectOption, StatusCategory } from "@/types/database";
@@ -81,19 +80,25 @@ export function SelectOptionsEditor({
   options: SelectOption[];
   onChange: (options: SelectOption[]) => void;
 }) {
-  /** Id da opção cuja paleta de cores está aberta. */
-  const [colorFor, setColorFor] = useState<string | null>(null);
+  /** Input de "nova opção" aberto (substitui a mensagem de vazio). */
+  const [adding, setAdding] = useState(false);
+  /** Texto digitado no input de nova opção. */
+  const [draft, setDraft] = useState("");
   const reorder = useOptionReorder(options, onChange);
 
-  function addOption() {
+  /** Cria a opção digitada, mantendo o input aberto para a próxima. */
+  function commitDraft() {
+    const label = draft.trim();
+    if (!label) return;
     onChange([
       ...options,
       {
         id: newOptionId(),
-        label: "Nova opção",
+        label,
         color: OPTION_COLORS[options.length % OPTION_COLORS.length],
       },
     ]);
+    setDraft("");
   }
 
   function updateOption(id: string, patch: Partial<SelectOption>) {
@@ -101,13 +106,61 @@ export function SelectOptionsEditor({
   }
 
   function removeOption(id: string) {
-    onChange(options.filter((o) => o.id !== id));
+    const next = options.filter((o) => o.id !== id);
+    onChange(next);
+    // Sem opções, volta ao estado inicial: mostra de novo o botão "Adicionar
+    // opção" (e esconde o input de nova opção).
+    if (next.length === 0) {
+      setAdding(false);
+      setDraft("");
+    }
   }
 
   return (
-    <div className="space-y-1.5">
+    // `pl-2`/`pr-1`: deixa os ícones da esquerda e da direita (adicionar e a
+    // seta de cada opção) à mesma distância da borda do popover.
+    <div className="space-y-1.5 pl-2 pr-1">
+      <div className="flex items-center justify-between">
+        <span className="text-left text-[11px] uppercase tracking-wide text-muted-foreground">
+          Opções
+        </span>
+        {options.length > 0 ? (
+          <button
+            type="button"
+            onClick={() => setAdding(true)}
+            aria-label="Adicionar opção"
+            title="Adicionar opção"
+            className="flex h-6 items-center justify-center rounded px-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
+      </div>
+      {adding ? (
+        <Input
+          autoFocus
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              commitDraft();
+            } else if (e.key === "Escape") {
+              e.preventDefault();
+              setAdding(false);
+              setDraft("");
+            }
+          }}
+          placeholder="Nome da opção"
+          aria-label="Nova opção"
+        />
+      ) : null}
       {options.length === 0 ? (
-        <p className="px-1 py-1 text-xs text-muted-foreground">Nenhuma opção ainda.</p>
+        adding ? null : (
+          <p className="px-1 py-1 text-xs text-muted-foreground">
+            Nenhuma opção ainda.
+          </p>
+        )
       ) : (
         <ul className="space-y-1">
           {options.map((option) => (
@@ -115,7 +168,7 @@ export function SelectOptionsEditor({
               key={option.id}
               {...reorder.itemProps(option.id)}
               className={cn(
-                "relative flex items-center gap-1.5 rounded",
+                "relative -mx-1 flex items-center gap-1.5 rounded px-1 hover:bg-accent",
                 reorder.dragId === option.id && "opacity-50",
                 // Barra indicadora da posição de inserção (sem borda).
                 reorder.overId === option.id &&
@@ -129,65 +182,44 @@ export function SelectOptionsEditor({
                 {...reorder.handleProps(option.id)}
                 aria-label={`Reordenar opção ${option.label}`}
                 title="Arrastar para reordenar"
-                className="flex h-6 w-4 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
+                className="flex h-6 w-3.5 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
               >
                 <GripVertical className="h-3.5 w-3.5" />
               </button>
-              <Chip option={option} />
-              <Input
-                value={option.label}
-                onChange={(e) => updateOption(option.id, { label: e.target.value })}
-                className="min-w-0 flex-1 border-0 px-1 shadow-none"
-                aria-label={`Nome da opção ${option.label}`}
+              {/* Clicar em qualquer parte da opção abre o popover de cor/nome. */}
+              <OptionColorPopover
+                option={option}
+                onSelect={(color) => updateOption(option.id, { color })}
+                onRename={(label) => updateOption(option.id, { label })}
+                onRemove={() => removeOption(option.id)}
+                trigger={
+                  <>
+                    <span className="flex min-w-0 flex-1 items-center">
+                      <Chip option={option} />
+                    </span>
+                    <ChevronRight className="h-3.5 w-3.5 flex-none text-muted-foreground" />
+                  </>
+                }
               />
-              <div className="relative">
-                <button
-                  type="button"
-                  onClick={() => setColorFor((cur) => (cur === option.id ? null : option.id))}
-                  aria-label={`Cor da opção ${option.label}`}
-                  title="Alterar cor"
-                  className="flex h-[30px] w-[30px] items-center justify-center rounded hover:bg-accent"
-                >
-                  <span className={cn("h-3.5 w-3.5 rounded-full", option.color)} />
-                </button>
-                {colorFor === option.id ? (
-                  <div className="absolute right-0 top-8 z-20 grid w-28 grid-cols-5 gap-1 rounded-md border bg-popover p-2 shadow-lg">
-                    {OPTION_COLORS.map((color) => (
-                      <button
-                        key={color}
-                        type="button"
-                        onClick={() => {
-                          updateOption(option.id, { color });
-                          setColorFor(null);
-                        }}
-                        aria-label="Escolher cor"
-                        className={cn(
-                          "h-4 w-4 rounded-full ring-offset-1 hover:ring-2 hover:ring-ring",
-                          color,
-                          option.color === color && "ring-2 ring-ring",
-                        )}
-                      />
-                    ))}
-                  </div>
-                ) : null}
-              </div>
-              <button
-                type="button"
-                onClick={() => removeOption(option.id)}
-                aria-label={`Excluir opção ${option.label}`}
-                title="Excluir opção"
-                className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded text-muted-foreground hover:bg-destructive/10 hover:text-destructive"
-              >
-                <Trash2 className="h-3.5 w-3.5" />
-              </button>
             </li>
           ))}
         </ul>
       )}
-      <Button variant="outline" size="sm" onClick={addOption}>
-        <Plus className="h-3.5 w-3.5" />
-        Adicionar opção
-      </Button>
+      {options.length === 0 && !adding ? (
+        <button
+          type="button"
+          onClick={() => setAdding(true)}
+          // `-ml-2` + largura extra cancelam o recuo do editor, então o botão
+          // fica com a mesma largura do "Excluir propriedade"; `px-2` mantém o
+          // ícone na mesma coluna dos demais.
+          className="-ml-2 flex w-[calc(100%+0.75rem)] items-center gap-3 rounded px-2 py-1.5 text-left hover:bg-accent"
+        >
+          <Plus className="h-4 w-4 flex-none text-foreground" />
+          <span className="flex-1 text-[13px] font-medium text-foreground">
+            Adicionar opção
+          </span>
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -6,9 +6,8 @@ import {
   ArrowLeft,
   ArrowLeftRight,
   Check,
-  ChevronDown,
-  CircleDashed,
   ChevronRight,
+  CircleDashed,
   Eye,
   EyeOff,
   LayoutTemplate,
@@ -26,6 +25,7 @@ import {
   RELATION_LIMITS,
   ROLLUP_FUNCTIONS,
   columnIcon,
+  columnTypeMeta,
   editableOptionsForColumn,
 } from "@/components/database/database-fields";
 import {
@@ -151,11 +151,15 @@ export function TableSettingsPopover({
 }: TableSettingsPopoverProps) {
   /** Confirmação em duas etapas para excluir a tabela. */
   const [confirmDelete, setConfirmDelete] = useState(false);
-  /** Id da coluna que está com o seletor de tipo aberto. */
-  const [openTypeFor, setOpenTypeFor] = useState<string | null>(null);
   /** Tela interna ativa do popover. */
   const [view, setView] = useState<
-    "menu" | "edit" | "property" | "visibility" | "layout" | "automations"
+    | "menu"
+    | "edit"
+    | "property"
+    | "type"
+    | "visibility"
+    | "layout"
+    | "automations"
   >("menu");
   /** Coluna cujas configurações estão abertas na tela "property". */
   const [editingColumnId, setEditingColumnId] = useState<string | null>(null);
@@ -235,7 +239,6 @@ export function TableSettingsPopover({
     setView(initialView);
     setIconPickerOpen(false);
     setIconPickerPos(null);
-    setOpenTypeFor(null);
     setConfirmDelete(false);
     setEditingColumnId(null);
     setPropertySearch("");
@@ -296,13 +299,31 @@ export function TableSettingsPopover({
         role="dialog"
         aria-label="Configurações da tabela"
       >
-        <div className="flex items-center gap-2 border-b px-4 py-2.5">
+        <div
+          className={cn(
+            "flex items-center gap-2 py-2.5",
+            // Na tela da propriedade os ícones do cabeçalho (voltar/fechar)
+            // ficam alinhados com os ícones de baixo (recuados por `px-2`).
+            view === "property" ? "px-3" : "px-4",
+            // Sem divisória na tela da propriedade (o nome já aparece abaixo)
+            // nem na lista de tipos.
+            view !== "property" && view !== "type" && "border-b",
+          )}
+        >
           {view !== "menu" ? (
             <button
               type="button"
-              // Da tela de uma propriedade volta para a lista de propriedades;
-              // das demais, volta ao menu principal.
-              onClick={() => setView(view === "property" ? "edit" : "menu")}
+              // Da tela de tipos volta para a propriedade; da propriedade, para
+              // a lista; das demais, volta ao menu principal.
+              onClick={() =>
+                setView(
+                  view === "property"
+                    ? "edit"
+                    : view === "type"
+                      ? "property"
+                      : "menu",
+                )
+              }
               aria-label="Voltar"
               title="Voltar"
               className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -319,7 +340,9 @@ export function TableSettingsPopover({
                 ? "Editar propriedades"
                 : view === "property"
                   ? (editingColumn?.name ?? "Propriedade")
-                  : view === "layout"
+                  : view === "type"
+                    ? "Alterar tipo"
+                    : view === "layout"
                     ? "Layout"
                     : view === "automations"
                       ? "Automações"
@@ -335,7 +358,13 @@ export function TableSettingsPopover({
           </button>
         </div>
 
-        <div className="flex min-h-0 flex-1 flex-col overflow-y-auto px-4 py-3">
+        <div
+          className={cn(
+            "flex min-h-0 flex-1 flex-col overflow-y-auto",
+            // Menos padding na tela de uma propriedade.
+            view === "property" ? "px-2 py-2" : "px-4 py-3",
+          )}
+        >
           {view === "menu" ? (
             <>
               {/* Nome + seletor de icone lado a lado */}
@@ -482,8 +511,10 @@ export function TableSettingsPopover({
             <div className="space-y-2 mb-2">
               <ul className="space-y-1.5">
               {columns.filter((c) => c.id === editingColumnId).map((column) => {
+                const meta = columnTypeMeta(column.type);
                 const TypeIcon = columnIcon(column);
-                const isTypeOpen = openTypeFor === column.id;
+                /** Opções atuais da propriedade (seleção/status). */
+                const columnOptions = editableOptionsForColumn(column);
                 /** Propriedades com lista de opções (seleção/status). */
                 const hasOptions =
                   column.type === "select" ||
@@ -537,7 +568,7 @@ export function TableSettingsPopover({
                 return (
                   <li
                     key={column.id}
-                    className="flex flex-wrap items-center gap-2 px-2 py-1.5"
+                    className="flex flex-wrap items-center gap-2 py-1"
                   >
                     <button
                       type="button"
@@ -548,7 +579,7 @@ export function TableSettingsPopover({
                       aria-expanded={propIconFor === column.id}
                       title="Escolher ícone da propriedade"
                       aria-label={`Ícone da propriedade ${column.name}`}
-                      className="flex h-[30px] w-[30px] flex-none items-center justify-center rounded border text-muted-foreground hover:bg-accent hover:text-foreground"
+                      className="flex h-[30px] flex-none items-center justify-center rounded border px-2 text-muted-foreground hover:bg-accent hover:text-foreground"
                     >
                       <TypeIcon className="h-4 w-4" />
                     </button>
@@ -558,55 +589,31 @@ export function TableSettingsPopover({
                       className="min-w-0 flex-1 px-2"
                       aria-label={`Nome da propriedade ${column.name}`}
                     />
-                    {/* "Alterar tipo" abaixo do input. */}
-                    <div className="relative basis-full">
+                    {/* "Alterar tipo" abre a lista de tipos na própria aba. */}
+                    <div className="basis-full">
                       <button
                         type="button"
-                        onClick={() =>
-                          setOpenTypeFor((cur) => (cur === column.id ? null : column.id))
-                        }
-                        className="flex h-[30px] items-center gap-1.5 rounded px-2 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                        onClick={() => setView("type")}
+                        className="flex w-full items-center gap-3 rounded py-1.5 pl-2 pr-2 text-left hover:bg-accent"
                         aria-label={`Alterar tipo da propriedade ${column.name}`}
                         title="Alterar tipo"
                       >
-                        <ArrowLeftRight className="h-3.5 w-3.5" />
-                        Alterar tipo
-                        <ChevronDown className="h-3 w-3" />
+                        <ArrowLeftRight className="h-4 w-4 flex-none text-foreground" />
+                        <span className="flex-1 text-[13px] font-medium text-foreground">
+                          Alterar tipo
+                        </span>
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          {meta.label}
+                          <ChevronRight className="h-3.5 w-3.5" />
+                        </span>
                       </button>
-                      {isTypeOpen ? (
-                        <div className="absolute left-0 top-8 z-10 w-48 overflow-hidden rounded-md border bg-popover py-1 shadow-lg">
-                          {COLUMN_TYPES.map((t) => {
-                            const OptIcon = t.icon;
-                            return (
-                              <button
-                                key={t.type}
-                                type="button"
-                                onClick={() => {
-                                  onUpdateColumn(column.id, { type: t.type });
-                                  setOpenTypeFor(null);
-                                }}
-                                className={cn(
-                                  "flex w-full items-center gap-2 px-2 py-1.5 text-sm hover:bg-accent",
-                                  column.type === t.type && "bg-accent",
-                                )}
-                              >
-                                <OptIcon className="h-3.5 w-3.5 text-muted-foreground" />
-                                {t.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
                     </div>
                     {hasOptions ? (
                       <div className="basis-full">
-                        {/* Divisória + rótulo separando o nome das opções. */}
+                        {/* Divisória acima de "Opções". */}
                         <div className="my-1.5 h-px bg-border" />
-                        <span className="mb-1 block text-left text-[11px] uppercase tracking-wide text-muted-foreground">
-                          Opções
-                        </span>
                         <SelectOptionsEditor
-                          options={editableOptionsForColumn(column)}
+                          options={columnOptions}
                           onChange={(options) =>
                             onUpdateColumn(column.id, { options })
                           }
@@ -840,6 +847,35 @@ export function TableSettingsPopover({
               })}
             </ul>
             </div>
+          ) : view === "type" ? (
+            <div className="space-y-1">
+              {COLUMN_TYPES.map((t) => {
+                const OptIcon = t.icon;
+                const isCurrent = editingColumn?.type === t.type;
+                return (
+                  <button
+                    key={t.type}
+                    type="button"
+                    onClick={() => {
+                      if (editingColumn) {
+                        onUpdateColumn(editingColumn.id, { type: t.type });
+                      }
+                      setView("property");
+                    }}
+                    className={cn(
+                      "flex w-full items-center gap-3 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                      isCurrent && "bg-accent",
+                    )}
+                  >
+                    <OptIcon className="h-4 w-4 flex-none text-muted-foreground" />
+                    <span className="flex-1">{t.label}</span>
+                    {isCurrent ? (
+                      <Check className="h-4 w-4 flex-none text-primary" />
+                    ) : null}
+                  </button>
+                );
+              })}
+            </div>
           ) : view === "layout" ? (
             <div className="space-y-3 mb-2">
               <div className="space-y-2">
@@ -964,7 +1000,7 @@ export function TableSettingsPopover({
               <button
                 type="button"
                 onClick={onAddColumn}
-                className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
+                className="flex w-full items-center gap-3 rounded px-2 py-1.5 text-left hover:bg-accent"
               >
                 <Plus className="h-4 w-4 flex-none text-muted-foreground" />
                 <span className="flex-1 text-[13px] font-medium">
@@ -975,20 +1011,22 @@ export function TableSettingsPopover({
           ) : null}
           {/* No rodapé da tela de uma propriedade o botão exclui a propriedade;
               nas demais telas, exclui a tabela. */}
-          {view === "property" && editingColumn ? (
-            <button
-              type="button"
-              onClick={() => {
-                onRemoveColumn(editingColumn.id);
-                setView("edit");
-              }}
-              className="group flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent hover:text-destructive"
-            >
-              <Trash2 className="h-4 w-4 flex-none text-muted-foreground group-hover:text-destructive" />
-              <span className="flex-1 text-[13px] font-medium">
-                Excluir propriedade
-              </span>
-            </button>
+          {view === "type" ? null : view === "property" && editingColumn ? (
+            <div className="mt-2 border-t pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  onRemoveColumn(editingColumn.id);
+                  setView("edit");
+                }}
+                className="group flex w-full items-center gap-3 rounded px-2 py-1.5 text-left hover:bg-accent hover:text-destructive"
+              >
+                <Trash2 className="h-4 w-4 flex-none text-muted-foreground group-hover:text-destructive" />
+                <span className="flex-1 text-[13px] font-medium">
+                  Excluir propriedade
+                </span>
+              </button>
+            </div>
           ) : confirmDelete ? (
             <div className="flex flex-wrap items-center gap-2 rounded px-2.5 py-1.5 hover:bg-destructive/10">
               <span className="text-sm text-muted-foreground">
@@ -1016,7 +1054,7 @@ export function TableSettingsPopover({
             <button
               type="button"
               onClick={() => setConfirmDelete(true)}
-              className="group flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent hover:text-destructive"
+              className="group flex w-full items-center gap-3 rounded px-2 py-1.5 text-left hover:bg-accent hover:text-destructive"
             >
               <Trash2 className="h-4 w-4 flex-none text-muted-foreground group-hover:text-destructive" />
               <span className="flex-1 text-[13px] font-medium">

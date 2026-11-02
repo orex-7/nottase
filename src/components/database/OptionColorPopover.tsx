@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronRight, Trash2 } from "lucide-react";
 
@@ -26,6 +26,7 @@ export function OptionColorPopover({
   onSelect,
   onRename,
   onRemove,
+  trigger,
 }: {
   option: SelectOption;
   onSelect: (color: string) => void;
@@ -33,6 +34,11 @@ export function OptionColorPopover({
   onRename?: (label: string) => void;
   /** Quando informado, mostra o botão de excluir a opção abaixo do nome. */
   onRemove?: () => void;
+  /**
+   * Conteúdo do gatilho que abre o popover. Sem ele, usa a seta padrão — com
+   * ele, o gatilho ocupa toda a largura (ex.: o chip da opção inteiro).
+   */
+  trigger?: ReactNode;
 }) {
   /** Botão (seta) usado para ancorar o popover. */
   const btnRef = useRef<HTMLButtonElement>(null);
@@ -71,11 +77,21 @@ export function OptionColorPopover({
         aria-expanded={pos !== null}
         aria-label={`Cor da opção ${option.label}`}
         title="Alterar cor"
-        className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+        className={cn(
+          "flex items-center rounded",
+          trigger
+            ? "min-w-0 flex-1 pr-1 text-left"
+            : "h-6 flex-none justify-center px-1 text-muted-foreground",
+        )}
       >
-        <ChevronRight
-          className={cn("h-3.5 w-3.5 transition-transform", pos && "rotate-90")}
-        />
+        {trigger ?? (
+          <ChevronRight
+            className={cn(
+              "h-3.5 w-3.5 transition-transform",
+              pos && "rotate-90",
+            )}
+          />
+        )}
       </button>
       {pos
         ? createPortal(
