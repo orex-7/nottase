@@ -9,6 +9,7 @@ vi.mock("@/lib/database", async (importOriginal) => {
     fetchProjects: vi.fn(),
     fetchProjectCategories: vi.fn(),
     fetchDatabaseRowsPage: vi.fn(),
+    fetchAllDatabaseRows: vi.fn(),
     fetchOpenDatabases: vi.fn(),
     saveOpenDatabases: vi.fn(),
     createRowAtEnd: vi.fn(),
@@ -60,6 +61,7 @@ vi.mock("@tanstack/react-virtual", () => ({
 import {
   createRowAtEnd,
   deleteRow,
+  fetchAllDatabaseRows,
   fetchDatabaseRowsPage,
   fetchDatabases,
   fetchOpenDatabases,
@@ -80,6 +82,7 @@ const fetchDatabasesMock = vi.mocked(fetchDatabases);
 const fetchProjectsMock = vi.mocked(fetchProjects);
 const fetchProjectCategoriesMock = vi.mocked(fetchProjectCategories);
 const fetchRowsMock = vi.mocked(fetchDatabaseRowsPage);
+const fetchAllRowsMock = vi.mocked(fetchAllDatabaseRows);
 const fetchOpenDatabasesMock = vi.mocked(fetchOpenDatabases);
 const saveOpenDatabasesMock = vi.mocked(saveOpenDatabases);
 const createRowAtEndMock = vi.mocked(createRowAtEnd);
@@ -164,6 +167,8 @@ describe("DatabaseView — estado vazio", () => {
     fetchRowsMock
       .mockReset()
       .mockResolvedValue({ rows: [], nextCursor: null, hasMore: false });
+    // Kanban/Gráfico carregam o conjunto completo de linhas (não paginado).
+    fetchAllRowsMock.mockReset().mockResolvedValue([]);
     runAutoTemplatesMock.mockReset().mockResolvedValue([]);
     // Navegação entre databases abertos (persistida por usuário no Supabase).
     // `null` = nunca salvo (primeiro uso), quando o auto-open do primeiro
@@ -315,6 +320,42 @@ describe("DatabaseView — estado vazio", () => {
     expect(
       screen.queryByLabelText("Nome da propriedade"),
     ).not.toBeInTheDocument();
+  });
+
+  it("esconde alterar tipo e editar propriedade na coluna de título", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([
+      {
+        ...DATABASE,
+        columns: [
+          { id: "name", name: "Nome", type: "text" },
+          { id: "site", name: "Site", type: "url" },
+        ],
+      },
+    ]);
+    render(<DatabaseView userName="Ana" />);
+
+    // Coluna de título ("Nome"): o popover abre, mas sem "Alterar tipo" nem
+    // "Editar propriedade".
+    fireEvent.click(await screen.findByRole("button", { name: "Nome" }));
+    expect(
+      await screen.findByRole("button", { name: "Ocultar propriedade" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Alterar tipo" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Editar propriedade" }),
+    ).not.toBeInTheDocument();
+
+    // Coluna comum ("Site"): mantém as duas opções.
+    fireEvent.click(screen.getByRole("button", { name: "Site" }));
+    expect(
+      await screen.findByRole("button", { name: "Alterar tipo" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Editar propriedade" }),
+    ).toBeInTheDocument();
   });
 
   it("adiciona uma linha pelo botão fixo no rodapé da tabela", async () => {
@@ -828,6 +869,97 @@ describe("DatabaseView — estado vazio", () => {
     expect(
       screen.queryByRole("link", { name: "Abrir link" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("trunca a URL longa no card do Kanban", async () => {
+    // Visualização Kanban ativa, agrupada pela coluna de status.
+    window.localStorage.setItem(
+      "calendar:dbViews:db1",
+      JSON.stringify({
+        views: [{ id: "v-kanban", type: "kanban", name: "Kanban" }],
+        activeViewId: "v-kanban",
+        kanbanColumnId: "status",
+      }),
+    );
+    const LONG_URL =
+      "https://exemplo.com/um/caminho/bem/longo/que/nao/cabe/no/card/do/kanban";
+    const KANBAN_DATABASE: Database = {
+      id: "db1",
+      name: "Links",
+      icon: null,
+      projectId: "p1",
+      linkedDatabaseId: null,
+      columns: [
+        {
+          id: "status",
+          name: "Status",
+          type: "status",
+          options: [{ id: "o1", label: "Feito", color: OPTION_COLORS[0] }],
+        },
+        { id: "site", name: "Site", type: "url" },
+      ],
+      rows: [],
+      templates: [],
+    };
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([KANBAN_DATABASE]);
+    fetchAllRowsMock.mockResolvedValue([
+      { id: "r1", values: { site: LONG_URL, status: "o1" } },
+    ]);
+
+    render(<DatabaseView userName="Ana" />);
+
+    // A URL do card é truncada para não estourar a largura da coluna.
+    const link = await screen.findByText(LONG_URL);
+    expect(link.className).toContain("truncate");
+  });
+
+  it("abre a página do item ao clicar no card do Kanban", async () => {
+    window.localStorage.setItem(
+      "calendar:dbViews:db1",
+      JSON.stringify({
+        views: [{ id: "v-kanban", type: "kanban", name: "Kanban" }],
+        activeViewId: "v-kanban",
+        kanbanColumnId: "status",
+      }),
+    );
+    const KANBAN_DATABASE: Database = {
+      id: "db1",
+      name: "Tarefas",
+      icon: null,
+      projectId: "p1",
+      linkedDatabaseId: null,
+      columns: [
+        { id: "name", name: "Nome", type: "text" },
+        {
+          id: "status",
+          name: "Status",
+          type: "status",
+          options: [{ id: "o1", label: "Feito", color: OPTION_COLORS[0] }],
+        },
+      ],
+      rows: [],
+      templates: [],
+    };
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([KANBAN_DATABASE]);
+    fetchAllRowsMock.mockResolvedValue([
+      { id: "r1", values: { name: "Comprar leite", status: "o1" } },
+    ]);
+
+    const { container } = render(<DatabaseView userName="Ana" />);
+
+    // Aguarda o card do Kanban (as linhas vêm de `fetchAllDatabaseRows`).
+    const card = await waitFor(() => {
+      const el = container.querySelector<HTMLElement>("[data-kanban-card]");
+      if (!el) throw new Error("aguardando o card do Kanban");
+      return el;
+    });
+
+    // Clicar em qualquer ponto do card abre a página do item.
+    fireEvent.click(card);
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
   });
 
   it("respeita o estado salvo vazio e não reabre o primeiro database", async () => {

@@ -2068,6 +2068,12 @@ function DatabaseTable({
   }, [kanbanColumns, kanbanColumnId, columns]);
 
   /**
+   * Id da propriedade de título (primeira coluna de texto). Ela não permite
+   * "Alterar tipo" nem "Editar propriedade" no popover do cabeçalho.
+   */
+  const titleColumnId = titleColumnOf(columns)?.id ?? null;
+
+  /**
    * Mantém `kanbanColumnId` apontando para uma coluna válida: se a coluna
    * escolhida for removida (ou trocada de tipo), volta para a padrão.
    */
@@ -3766,6 +3772,19 @@ function DatabaseTable({
         </span>
       );
     }
+    if (column.type === "url") {
+      // URL longa não pode estourar a largura do card do Kanban: `max-w-full`
+      // limita à largura do card (o container usa `items-start`) e `truncate`
+      // corta com "…".
+      return (
+        <span
+          className="block max-w-full truncate text-xs text-muted-foreground"
+          title={text}
+        >
+          {text}
+        </span>
+      );
+    }
     return <span className="text-xs text-muted-foreground">{text}</span>;
   }
 
@@ -4979,6 +4998,7 @@ function DatabaseTable({
                             ) : null}
                           </div>
 
+                          {column.id !== titleColumnId ? (
                           <div className="relative">
                             <button
                               type="button"
@@ -5051,7 +5071,9 @@ function DatabaseTable({
                               </div>
                             ) : null}
                           </div>
+                          ) : null}
 
+                          {column.id !== titleColumnId ? (
                           <div className="relative">
                             <button
                               type="button"
@@ -5474,6 +5496,7 @@ function DatabaseTable({
                             ) : null}
 
                           </div>
+                          ) : null}
 
                           <button
                             type="button"
@@ -5783,12 +5806,7 @@ function DatabaseTable({
           onUpdateColumn={updateColumn}
         />
         ) : (
-        <ChartView
-          columns={columns}
-          rows={filtered}
-          config={chartConfig}
-          onConfigChange={updateChartConfig}
-        />
+        <ChartView columns={columns} rows={filtered} config={chartConfig} />
         )}
         </div>
         {/* Reserva a altura da barra horizontal quando ela **não** está visível:

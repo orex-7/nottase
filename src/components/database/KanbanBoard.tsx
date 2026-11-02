@@ -288,6 +288,11 @@ export function KanbanBoard({
                   ) : null}
                   <div
                     draggable
+                    data-kanban-card
+                    // Clicar em qualquer ponto do card abre a página do item. O
+                    // arraste continua funcionando: o navegador não dispara
+                    // `click` depois de um arraste.
+                    onClick={() => onOpenRow(row.id)}
                     onDragStart={(event) => {
                       event.dataTransfer.setData("text/plain", row.id);
                       event.dataTransfer.effectAllowed = "move";
@@ -325,14 +330,23 @@ export function KanbanBoard({
                     <div className="flex items-start gap-1">
                       <button
                         type="button"
-                        onClick={() => onOpenRow(row.id)}
+                        // O clique do card já abre a página; `stopPropagation`
+                        // evita disparo duplo (o botão segue acessível por teclado).
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onOpenRow(row.id);
+                        }}
                         className="min-w-0 flex-1 text-left text-sm font-medium hover:underline"
                       >
                         <span className="line-clamp-2">{cardTitle(row)}</span>
                       </button>
                       <button
                         type="button"
-                        onClick={() => onDeleteRow(row.id)}
+                        // Excluir não deve abrir a página do item.
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteRow(row.id);
+                        }}
                         aria-label="Excluir item"
                         className="flex h-6 w-6 flex-none items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover/card:opacity-100"
                       >

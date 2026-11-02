@@ -71,13 +71,6 @@ export const CHART_KINDS: {
   { kind: "radar", label: "Radar", icon: RadarIcon },
 ];
 
-/** Rótulo das agregações disponíveis (contagem/soma/média). */
-export const CHART_AGGREGATES: { value: ChartAggregate; label: string }[] = [
-  { value: "count", label: "Contagem" },
-  { value: "sum", label: "Soma" },
-  { value: "avg", label: "Média" },
-];
-
 /** Paleta fixa (hex) para as séries/fatias do gráfico. */
 export const CHART_COLORS: string[] = [
   "#6366f1", // indigo
@@ -231,17 +224,15 @@ interface ChartViewProps {
   columns: Column[];
   rows: DbRow[];
   config: ChartConfig;
-  /** Atualiza (e persiste) a configuração do gráfico. */
-  onConfigChange: (patch: Partial<ChartConfig>) => void;
 }
 
 /**
  * Visualização "Gráfico" (estilo Notion): agrega as linhas por uma propriedade
- * de categoria e desenha barras, linha, área ou pizza. A configuração (formato,
- * eixo de categoria, valor e agregação) é escolhida na barra do topo e
- * persistida no pai. Usa Recharts (SVG responsivo) para a renderização.
+ * de categoria e desenha barras, linha, área ou pizza. O formato é escolhido nas
+ * Configurações da tabela; categoria e valor são derivados das colunas. Usa
+ * Recharts (SVG responsivo) para a renderização.
  */
-export function ChartView({ columns, rows, config, onConfigChange }: ChartViewProps) {
+export function ChartView({ columns, rows, config }: ChartViewProps) {
   /** Colunas que podem servir de categoria (select/status/checkbox/data). */
   const groupColumns = useMemo(() => chartGroupColumns(columns), [columns]);
   /** Colunas numéricas disponíveis para somar/média. */
@@ -282,11 +273,6 @@ export function ChartView({ columns, rows, config, onConfigChange }: ChartViewPr
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-4 p-4">
-      <ChartConfigBar
-        config={config}
-        valueColumn={valueColumn}
-        onConfigChange={onConfigChange}
-      />
       <div className="min-h-0 flex-1">
         {data.length === 0 ? (
           <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
@@ -296,41 +282,6 @@ export function ChartView({ columns, rows, config, onConfigChange }: ChartViewPr
           <ChartRenderer kind={config.kind} data={data} valueColumn={valueColumn} />
         )}
       </div>
-    </div>
-  );
-}
-
-interface ChartConfigBarProps {
-  config: ChartConfig;
-  valueColumn: Column | null;
-  onConfigChange: (patch: Partial<ChartConfig>) => void;
-}
-
-/** Barra de controles do gráfico: agregação (soma/média).
- *  O formato (barras/linha/área/pizza/radar) é escolhido nas Configurações da
- *  tabela; categoria e valor são derivados automaticamente das colunas. */
-function ChartConfigBar({ config, valueColumn, onConfigChange }: ChartConfigBarProps) {
-  // Sem coluna numérica (contagem), não há agregação a configurar.
-  if (!valueColumn) return null;
-  return (
-    <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-      <label className="flex items-center gap-1.5">
-        Agregar
-        <select
-          value={config.aggregate}
-          onChange={(e) =>
-            onConfigChange({ aggregate: e.target.value as ChartAggregate })
-          }
-          className="rounded border bg-background px-1.5 py-1 text-xs text-foreground outline-none"
-          aria-label="Agregação do gráfico"
-        >
-          {CHART_AGGREGATES.filter((a) => a.value !== "count").map((a) => (
-            <option key={a.value} value={a.value}>
-              {a.label}
-            </option>
-          ))}
-        </select>
-      </label>
     </div>
   );
 }
