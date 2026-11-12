@@ -17,7 +17,6 @@ import {
   GripVertical,
   MoreVertical,
   PanelLeftClose,
-  PanelLeftOpen,
   Plus,
   Search,
   Tags,
@@ -27,6 +26,9 @@ import {
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { AppSwitcher } from "@/components/calendar/AppSwitcher";
+import { SidebarTopBar } from "@/components/calendar/SidebarTopBar";
+import type { AppView } from "@/store/useCalendarStore";
 import {
   DEFAULT_PROJECT_COLOR,
   defaultColorForCategory,
@@ -51,7 +53,7 @@ import {
 } from "@/components/database/DatabasesScreen";
 
 /** Chave de persistência do estado minimizado da sidebar de projetos. */
-const COLLAPSED_KEY = "workspace:projectsSidebarCollapsed";
+export const PROJECTS_SIDEBAR_COLLAPSED_KEY = "workspace:projectsSidebarCollapsed";
 
 /**
  * Tipo MIME "privado" usado para marcar um arraste **de projeto** dentro da
@@ -115,6 +117,32 @@ interface ProjectsSidebarProps {
   mobileOpen?: boolean;
   /** Fecha a gaveta do celular ao navegar (abrir projeto/database/busca). */
   onCloseMobile?: () => void;
+  /**
+   * No desktop a sidebar hospeda o alternador Calendário/Workspace no topo
+   * (o cabeçalho deixa de exibi-lo).
+   */
+  showAppSwitcher?: boolean;
+  /** Área do app ativa (para o alternador). */
+  appView?: AppView;
+  /** Troca de área do app (para o alternador). */
+  onChangeAppView?: (view: AppView) => void;
+  /** Dados do usuário (logo + perfil no topo da sidebar, no desktop). */
+  userName?: string;
+  userEmail?: string;
+  userAvatar?: string | null;
+  /**
+   * Estado minimizado (controlado pelo pai). Quando não informado, a sidebar
+   * permanece expandida. O pai (`DatabaseView`) é quem persiste a preferência,
+   * porque o botão de minimizar vive na faixa de abas da barra de título.
+   */
+  collapsed?: boolean;
+  /** Alterna o estado minimizado (fornecido pelo pai). */
+  onToggleCollapsed?: () => void;
+  /**
+   * Esconde o botão de minimizar do cabeçalho. Usado no desktop, onde o
+   * controle passa a viver na faixa da barra de título (ao lado das abas).
+   */
+  hideMinimizeButton?: boolean;
 }
 /**
  * Popover de **gerenciamento de categorias** aberto pelo botão de ícone da
@@ -625,9 +653,16 @@ export function ProjectsSidebar({
   onDeleteProject,
   mobileOpen = false,
   onCloseMobile,
+  showAppSwitcher = false,
+  appView = "database",
+  onChangeAppView,
+  userName,
+  userEmail,
+  userAvatar,
+  collapsed = false,
+  onToggleCollapsed,
+  hideMinimizeButton = false,
 }: ProjectsSidebarProps) {
-  /** Estado de minimização da sidebar (persistido em localStorage). */
-  const [collapsed, setCollapsed] = useState(false);
   /** Categorias recolhidas pelo usuário (por nome). */
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
   /** Texto do filtro de busca de projetos (por nome). */
@@ -856,30 +891,9 @@ export function ProjectsSidebar({
     [dragProject],
   );
 
-
-
-
-
-
   /** Abre o popover de criação ancorado à sidebar (abre à direita dela). */
   const openCreate = useCallback(() => {
     setCreateAnchor(asideRef.current);
-  }, []);
-
-  // Restaura a preferência de minimização após a montagem (evita mismatch de hidratação).
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    setCollapsed(window.localStorage.getItem(COLLAPSED_KEY) === "1");
-  }, []);
-
-  const toggleCollapsed = useCallback(() => {
-    setCollapsed((prev) => {
-      const next = !prev;
-      if (typeof window !== "undefined") {
-        window.localStorage.setItem(COLLAPSED_KEY, next ? "1" : "0");
-      }
-      return next;
-    });
   }, []);
 
   /**
@@ -1001,56 +1015,11 @@ export function ProjectsSidebar({
     [closeMobile, onOpenSearchResult],
   );
 
-  // Estado minimizado: rail estreito apenas com os controles essenciais.
-  // No celular a gaveta sempre mostra a versão expandida (o rail só expõe 4
-  // ícones), então `mobileOpen` ignora `collapsed` — que continua valendo no
-  // desktop e permanece intacto no localStorage.
+  // Minimizada: a sidebar some por completo (sem o rail de ícones). O controle
+  // para expandir fica na faixa de abas da barra de título (`DatabaseView`). No
+  // celular a gaveta sempre mostra a versão expandida.
   if (collapsed && !mobileOpen) {
-    return (
-      <aside
-        ref={asideRef}
-        className="hidden shrink-0 flex-col items-center gap-2 border-r bg-sidebar p-2 md:flex"
-      >
-        <button
-          type="button"
-          onClick={toggleCollapsed}
-          aria-label="Expandir sidebar de projetos"
-          title="Expandir sidebar de projetos"
-          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <PanelLeftOpen className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={openCreate}
-          aria-label="Novo projeto"
-          title="Novo projeto"
-          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Plus className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={(e) => setSearchAnchor(e.currentTarget)}
-          aria-label="Buscar no Workspace"
-          aria-haspopup="dialog"
-          aria-expanded={searchAnchor !== null}
-          title="Buscar no Workspace"
-          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Search className="h-4 w-4" />
-        </button>
-        <button
-          type="button"
-          onClick={(e) => setCategoriesAnchor(e.currentTarget)}
-          aria-label="Gerenciar categorias"
-          title="Gerenciar categorias"
-          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-        >
-          <Tags className="h-4 w-4" />
-        </button>
-      </aside>
-    );
+    return null;
   }
 
   return (
@@ -1076,7 +1045,7 @@ export function ProjectsSidebar({
       // realmente passa da altura. O `scrollbar-gutter: stable` do
       // `.scrollbar-stable` mantém o espaço reservado, então nada desloca.
       className={cn(
-        "scrollbar-stable flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-sidebar p-3 transition-transform md:w-60",
+        "flex h-full min-h-0 w-72 shrink-0 flex-col gap-3 overflow-hidden border-r bg-sidebar p-3 transition-transform md:w-64",
         // Off-canvas no celular (gaveta sobre o conteúdo); a partir de `md`
         // volta ao fluxo normal, estática e sem deslocamento. No celular a
         // gaveta é um pouco mais larga e ganha folga à direita.
@@ -1085,10 +1054,34 @@ export function ProjectsSidebar({
         mobileOpen ? "translate-x-0" : "-translate-x-full",
       )}
     >
+      {/* Logo + perfil no topo (só no desktop). */}
+      {showAppSwitcher ? (
+        <SidebarTopBar
+          userName={userName ?? ""}
+          userEmail={userEmail ?? ""}
+          userAvatar={userAvatar ?? null}
+        />
+      ) : null}
+
+      {/* Alternador: só o Workspace no topo; o Calendário fica no pé da sidebar. */}
+      {showAppSwitcher && onChangeAppView ? (
+        <AppSwitcher
+          appView={appView}
+          onChangeAppView={onChangeAppView}
+          only="database"
+          className="app-no-drag w-full flex-none"
+        />
+      ) : null}
+
+      {/* Região rolável (rótulo + lista de projetos). O rodapé (Calendário +
+          perfil) fica fixo fora dela, no pé da sidebar. */}
+      {/* Coluna (rótulo fixo + lista rolável): só a lista de projetos criados
+          rola; "Projetos"/"Novo projeto" fica fixo no topo. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3">
       {/* O cabeçalho e a lista avançam 12px sobre o padding/gutter da sidebar
           (`-mr-3`) para que a borda direita das linhas fique alinhada com o
           grupo de ícones do rótulo. */}
-      <section className="-mr-3 flex flex-col gap-0.5">
+      <section className="-mr-3 flex min-w-0 flex-col gap-0.5">
         {/* As ações (busca e categorias) ficam na linha do rótulo para não
             competirem visualmente com a lista de projetos; "Novo projeto"
             permanece como linha com texto. */}
@@ -1130,24 +1123,26 @@ export function ProjectsSidebar({
               <Tags className="h-3.5 w-3.5" />
             </button>
 
-            <button
-              type="button"
-              // No celular não existe estado "minimizado" (a gaveta sempre abre
-              // expandida): o botão fecha o drawer. No desktop, minimiza.
-              onClick={() => {
-                if (mobileOpen) closeMobile();
-                else toggleCollapsed();
-              }}
-              aria-label={
-                mobileOpen ? "Fechar navegação" : "Minimizar sidebar de projetos"
-              }
-              title={
-                mobileOpen ? "Fechar navegação" : "Minimizar sidebar de projetos"
-              }
-              className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-            >
-              <PanelLeftClose className="h-4 w-4" />
-            </button>
+            {hideMinimizeButton ? null : (
+              <button
+                type="button"
+                // No celular não existe estado "minimizado" (a gaveta sempre abre
+                // expandida): o botão fecha o drawer. No desktop, minimiza.
+                onClick={() => {
+                  if (mobileOpen) closeMobile();
+                  else onToggleCollapsed?.();
+                }}
+                aria-label={
+                  mobileOpen ? "Fechar navegação" : "Minimizar sidebar de projetos"
+                }
+                title={
+                  mobileOpen ? "Fechar navegação" : "Minimizar sidebar de projetos"
+                }
+                className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+              >
+                <PanelLeftClose className="h-4 w-4" />
+              </button>
+            )}
           </div>
         </div>
 
@@ -1171,7 +1166,7 @@ export function ProjectsSidebar({
           Nenhum projeto encontrado.
         </p>
       ) : (
-        <div className="-mr-3 flex flex-col gap-2">
+        <div className="scrollbar-stable -mr-3 flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-y-auto overflow-x-hidden">
           {filteredGroups.map((group) => {
             const key = group.name || "__uncategorized__";
             const isGroupCollapsed = collapsedGroups.has(key);
@@ -1222,7 +1217,7 @@ export function ProjectsSidebar({
                     onClick={() => toggleGroup(key)}
                     aria-expanded={!isGroupCollapsed}
                     title={group.name}
-                    className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-[11px] uppercase tracking-wide text-muted-foreground hover:bg-accent"
+                    className="flex w-full items-center gap-1.5 rounded px-1 py-0.5 text-[11px] uppercase tracking-wide text-muted-foreground"
                   >
                     <ChevronDown
                       className={cn(
@@ -1315,10 +1310,8 @@ export function ProjectsSidebar({
                         >
                           <div
                             className={cn(
-                              "group relative flex items-center rounded hover:bg-accent",
-                              // Item selecionado: fundo de "seleção" (vermelho
-                              // bem sutil) com o texto em quase branco.
-                              isActive && "bg-selection",
+                              "group relative flex items-center rounded",
+                              isActive ? "bg-selection" : "hover:bg-accent",
                               optionsOpen && "bg-accent",
                               isDragging && "opacity-50",
                             )}
@@ -1363,7 +1356,7 @@ export function ProjectsSidebar({
                               }}
                               title={project.name}
                               className={cn(
-                                "flex min-w-0 flex-1 items-center gap-2 rounded py-1.5 pl-6 pr-6 text-left text-sm",
+                                "flex min-w-0 flex-1 items-center gap-2 rounded py-1 pl-6 pr-6 text-left text-sm",
                                 isActive && "font-medium text-foreground",
                               )}
                             >
@@ -1398,6 +1391,7 @@ export function ProjectsSidebar({
           })}
         </div>
       )}
+      </div>
 
       {createAnchor ? (
         <CreateProjectPopover
@@ -1501,6 +1495,7 @@ export function ProjectsSidebar({
           onClose={() => setSearchAnchor(null)}
         />
       ) : null}
+
     </aside>
   );
 }

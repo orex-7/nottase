@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import { fetchAllDatabaseRows } from "@/lib/database";
 import type { DbRow } from "@/types/database";
@@ -42,5 +42,13 @@ export function useAllDatabaseRows(databaseId: string | null, enabled: boolean) 
     };
   }, [databaseId, enabled]);
 
-  return { rows, loading, error };
+  /** Aplica um patch otimista na lista carregada (sem refetch). */
+  const patchRows = useCallback(
+    (updater: (prev: DbRow[]) => DbRow[]) => {
+      setRows(updater);
+    },
+    [],
+  );
+
+  return { rows, loading, error, patchRows };
 }

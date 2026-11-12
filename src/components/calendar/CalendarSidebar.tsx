@@ -2,8 +2,10 @@
 
 import { useCallback, useEffect, useState } from "react";
 import {
+  CalendarDays,
   ChevronLeft,
   ChevronRight,
+  LayoutDashboard,
   Loader2,
   PanelLeftClose,
   PanelLeftOpen,
@@ -14,11 +16,14 @@ import {
 import { isSameMonth, isToday } from "date-fns";
 
 import { Button } from "@/components/ui/button";
+import { AppSwitcher } from "@/components/calendar/AppSwitcher";
+import { SidebarTopBar } from "@/components/calendar/SidebarTopBar";
 import { getMonthMatrix, MONTH_NAMES, toDateKey, WEEKDAYS } from "@/lib/date-utils";
 import { fetchDatabases } from "@/lib/database";
 import { databaseIcon } from "@/lib/database-icons";
 import { cn } from "@/lib/utils";
 import { useCalendarStore, type SidebarDatabase } from "@/store/useCalendarStore";
+import type { AppView } from "@/store/useCalendarStore";
 
 interface CalendarSidebarProps {
   /** Ano exibido no mini-calendário. */
@@ -48,6 +53,19 @@ interface CalendarSidebarProps {
   mobileOpen?: boolean;
   /** Fecha a gaveta do celular ao navegar (selecionar dia/abrir database). */
   onCloseMobile?: () => void;
+  /**
+   * No desktop a sidebar hospeda o alternador Calendário/Workspace no topo
+   * (o cabeçalho deixa de exibi-lo).
+   */
+  showAppSwitcher?: boolean;
+  /** Área do app ativa (para o alternador). */
+  appView?: AppView;
+  /** Troca de área do app (para o alternador). */
+  onChangeAppView?: (view: AppView) => void;
+  /** Dados do usuário (logo + perfil no topo da sidebar, no desktop). */
+  userName?: string;
+  userEmail?: string;
+  userAvatar?: string | null;
 }
 
 /**
@@ -70,6 +88,12 @@ export function CalendarSidebar({
   onCreateDatabase,
   mobileOpen = false,
   onCloseMobile,
+  showAppSwitcher = false,
+  appView = "calendar",
+  onChangeAppView,
+  userName,
+  userEmail,
+  userAvatar,
 }: CalendarSidebarProps) {
   const monthDate = new Date(year, month, 1);
   const weeks = getMonthMatrix(monthDate);
@@ -161,13 +185,47 @@ export function CalendarSidebar({
   // ignora `collapsed` — que segue valendo no desktop.
   if (collapsed && !mobileOpen) {
     return (
-      <aside className="hidden shrink-0 flex-col items-center gap-2 border-r bg-sidebar p-2 md:flex">
+      <aside className="app-drag hidden shrink-0 flex-col items-center gap-2 border-r bg-sidebar p-2 md:flex">
+        {showAppSwitcher && onChangeAppView ? (
+          <div className="app-no-drag flex flex-col items-center gap-0.5 rounded-md border p-0.5">
+            <button
+              type="button"
+              onClick={() => onChangeAppView("calendar")}
+              aria-label="Calendário"
+              title="Calendário"
+              aria-pressed={appView === "calendar"}
+              className={cn(
+                "flex h-7 w-7 items-center justify-center rounded transition-colors",
+                appView === "calendar"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              )}
+            >
+              <CalendarDays className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangeAppView("database")}
+              aria-label="Workspace"
+              title="Workspace"
+              aria-pressed={appView === "database"}
+              className={cn(
+                "flex h-7 w-7 items-center justify-center rounded transition-colors",
+                appView === "database"
+                  ? "bg-primary text-primary-foreground"
+                  : "text-muted-foreground hover:bg-accent hover:text-foreground",
+              )}
+            >
+              <LayoutDashboard className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
         <button
           type="button"
           onClick={toggleCollapsed}
           aria-label="Expandir sidebar"
           title="Expandir sidebar"
-          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="app-no-drag flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <PanelLeftOpen className="h-4 w-4" />
         </button>
@@ -176,7 +234,7 @@ export function CalendarSidebar({
           onClick={() => setIsDbMenuOpen((v) => !v)}
           aria-label="Adicionar database"
           title="Adicionar database"
-          className="flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+          className="app-no-drag flex h-[30px] w-[30px] items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
         >
           <Table2 className="h-4 w-4" />
         </button>
@@ -187,7 +245,7 @@ export function CalendarSidebar({
   return (
     <aside
       className={cn(
-        "flex w-72 shrink-0 flex-col gap-3 overflow-y-auto border-r bg-sidebar p-3 transition-transform md:w-64",
+        "flex h-full min-h-0 w-72 shrink-0 flex-col gap-3 overflow-hidden border-r bg-sidebar p-3 transition-transform md:w-64",
         // Off-canvas no celular (gaveta sobre o conteúdo); a partir de `md`
         // volta ao fluxo normal, estática e sem deslocamento. No celular a
         // gaveta é um pouco mais larga e ganha folga à direita.
@@ -196,6 +254,28 @@ export function CalendarSidebar({
         mobileOpen ? "translate-x-0" : "-translate-x-full",
       )}
     >
+      {/* Logo + perfil no topo (só no desktop). */}
+      {showAppSwitcher ? (
+        <SidebarTopBar
+          userName={userName ?? ""}
+          userEmail={userEmail ?? ""}
+          userAvatar={userAvatar ?? null}
+        />
+      ) : null}
+
+      {/* Alternador: só o Workspace no topo; o Calendário fica no pé da sidebar. */}
+      {showAppSwitcher && onChangeAppView ? (
+        <AppSwitcher
+          appView={appView}
+          onChangeAppView={onChangeAppView}
+          only="database"
+          className="app-no-drag w-full flex-none"
+        />
+      ) : null}
+
+      {/* Região rolável (mini-calendário + databases). O rodapé (Calendário +
+          perfil) fica fixo fora dela, no pé da sidebar. */}
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto overflow-x-hidden">
       {/* Mini-calendário do mês atual */}
       <section className="rounded-lg border bg-card p-2 shadow-sm">
         <header className="mb-1 flex items-center justify-between px-1">
@@ -362,7 +442,7 @@ export function CalendarSidebar({
                 Seus databases
               </div>
 
-              <div className="max-h-64 overflow-y-auto">
+              <div className="max-h-64 overflow-y-auto overflow-x-hidden">
                 {loadingDbs ? (
                   <div className="flex items-center justify-center gap-2 px-2 py-4 text-sm text-muted-foreground">
                     <Loader2 className="h-4 w-4 animate-spin" />
@@ -409,6 +489,8 @@ export function CalendarSidebar({
           </>
         ) : null}
       </div>
+      </div>
+
     </aside>
   );
 }

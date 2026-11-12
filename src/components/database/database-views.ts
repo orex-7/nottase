@@ -1,8 +1,11 @@
 import { ChartColumn, SquareKanban, Table2 } from "lucide-react";
 
-import { kanbanGroupColumns } from "@/components/database/database-fields";
+import {
+  CALC_FUNCTIONS,
+  kanbanGroupColumns,
+} from "@/components/database/database-fields";
 import { isChartConfig, type ChartConfig } from "@/components/database/database-chart";
-import type { Column } from "@/types/database";
+import type { CalcFunction, Column } from "@/types/database";
 
 /** Tipo de visualização de um database (estilo "view" do Notion). */
 export type DbViewType = "table" | "kanban" | "chart";
@@ -21,6 +24,41 @@ export interface DbView {
   };
   /** Configuração do gráfico (independente por visualização; só p/ tipo chart). */
   chart?: ChartConfig;
+  /**
+   * Agregação do rodapé **desta** visualização, por id de coluna (estilo
+   * Notion). É independente por visão: a mesma coluna pode ter "Soma" numa
+   * visão e "Nenhum" em outra. A ausência da chave = "Nenhum".
+   */
+  calc?: Record<string, CalcFunction>;
+  /**
+   * Id da coluna usada para agrupar as linhas na visualização Tabela (estilo
+   * Notion). Independente por visão; `null`/ausente = sem agrupamento.
+   */
+  groupColumnId?: string | null;
+  /**
+   * Ordem dos grupos na Tabela agrupada (chaves: id da opção, `"__checked"`,
+   * `"__unchecked"` ou `"__empty"`). Ausente = ordem natural das opções.
+   */
+  groupOrder?: string[];
+  /** Chaves dos grupos ocultos na Tabela agrupada (estilo Notion). */
+  groupHidden?: string[];
+}
+
+/** Valores válidos de `CalcFunction` (para validar o que vem do localStorage). */
+const CALC_FUNCTION_VALUES = new Set<string>(
+  CALC_FUNCTIONS.map((f) => f.value),
+);
+
+/** Valida/limpa o mapa de agregações de uma visão lida do localStorage. */
+function sanitizeCalc(value: unknown): Record<string, CalcFunction> | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const out: Record<string, CalcFunction> = {};
+  for (const [columnId, fn] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof fn === "string" && CALC_FUNCTION_VALUES.has(fn)) {
+      out[columnId] = fn as CalcFunction;
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /** Gera um id único para uma nova visualização criada no cliente. */
@@ -159,6 +197,15 @@ export function loadPersistedViews(databaseId: string): PersistedViews | null {
               }
             : undefined,
         chart: isChartConfig(v.chart) ? v.chart : undefined,
+        calc: sanitizeCalc(v.calc),
+        groupColumnId:
+          typeof v.groupColumnId === "string" ? v.groupColumnId : null,
+        groupOrder: Array.isArray(v.groupOrder)
+          ? v.groupOrder.filter((k): k is string => typeof k === "string")
+          : undefined,
+        groupHidden: Array.isArray(v.groupHidden)
+          ? v.groupHidden.filter((k): k is string => typeof k === "string")
+          : undefined,
       };
     });
     if (views.length === 0) return null;

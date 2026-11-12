@@ -33,6 +33,11 @@ function makeProps(open: boolean) {
     currentDatabaseName: "Tarefas",
     onSaveRelation: vi.fn(),
     onSaveRollup: vi.fn(),
+    groupColumnId: null,
+    groupItems: [],
+    onReorderGroups: vi.fn(),
+    onToggleGroupHidden: vi.fn(),
+    onChangeGroupColumn: vi.fn(),
     onClose: vi.fn(),
   };
 }

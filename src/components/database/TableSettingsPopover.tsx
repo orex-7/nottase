@@ -1,6 +1,6 @@
 "use client";
 
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeft,
@@ -10,6 +10,8 @@ import {
   CircleDashed,
   Eye,
   EyeOff,
+  GripVertical,
+  Layers,
   LayoutTemplate,
   Plus,
   Settings2,
@@ -27,6 +29,8 @@ import {
   columnIcon,
   columnTypeMeta,
   editableOptionsForColumn,
+  tableGroupColumns,
+  type TableGroup,
 } from "@/components/database/database-fields";
 import {
   PAGE_LAYOUTS,
@@ -40,6 +44,10 @@ import {
 } from "@/components/database/database-chart";
 import { SelectOptionsEditor } from "@/components/database/SelectOptionsPopover";
 import { AutomationsPanel } from "@/components/database/AutomationsPanel";
+import {
+  markOptionDrag,
+  OPTION_DROP_BAR,
+} from "@/components/database/option-dnd";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ICON_OPTIONS, databaseIcon } from "@/lib/database-icons";
@@ -118,8 +126,22 @@ interface TableSettingsPopoverProps {
   onSaveRelation: (columnId: string, config: RelationDraft) => void;
   /** Salva (ou limpa) a configuração de um rollup. */
   onSaveRollup: (columnId: string, config: RollupConfig | null) => void;
+  /** Id da coluna usada para agrupar as linhas na visão Tabela (null = nenhum). */
+  groupColumnId: string | null;
+  /**
+   * Grupos da coluna de agrupamento ativa, já na ordem persistida (incluindo
+   * "Sem valor" e, para caixa de seleção, Marcado/Desmarcado). Vazio quando não
+   * há agrupamento.
+   */
+  groupItems: TableGroup[];
+  /** Persiste a nova ordem dos grupos (chaves de `groupItems`). */
+  onReorderGroups: (order: string[]) => void;
+  /** Alterna a visibilidade (oculto/visível) de um grupo. */
+  onToggleGroupHidden: (key: string) => void;
+  /** Define (ou limpa, com `null`) a coluna de agrupamento da visão Tabela. */
+  onChangeGroupColumn: (columnId: string | null) => void;
   /** Tela exibida ao abrir o popover (padrão: menu principal). */
-  initialView?: "menu" | "edit" | "visibility" | "layout" | "automations";
+  initialView?: "menu" | "edit" | "visibility" | "layout" | "group" | "automations";
   onClose: () => void;
 }
 
@@ -146,6 +168,11 @@ export function TableSettingsPopover({
   currentDatabaseName,
   onSaveRelation,
   onSaveRollup,
+  groupColumnId,
+  groupItems,
+  onReorderGroups,
+  onToggleGroupHidden,
+  onChangeGroupColumn,
   initialView = "menu",
   onClose,
 }: TableSettingsPopoverProps) {
@@ -159,6 +186,7 @@ export function TableSettingsPopover({
     | "type"
     | "visibility"
     | "layout"
+    | "group"
     | "automations"
   >("menu");
   /** Coluna cujas configurações estão abertas na tela "property". */
@@ -189,6 +217,21 @@ export function TableSettingsPopover({
   const [rollupDrafts, setRollupDrafts] = useState<
     Record<string, RollupConfig | null>
   >({});
+  /** Seletor flutuante "Agrupar por" (lista de propriedades) está aberto. */
+  const [groupPickerOpen, setGroupPickerOpen] = useState(false);
+  /** Botão "Agrupar por", usado para ancorar o seletor flutuante. */
+  const groupBtnRef = useRef<HTMLButtonElement>(null);
+  /** Posição (viewport) do seletor "Agrupar por". */
+  const [groupPickerPos, setGroupPickerPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  /** Busca de propriedades no seletor "Agrupar por". */
+  const [groupSearch, setGroupSearch] = useState("");
+  /** Id da opção de agrupamento sendo arrastada (reordenar grupos). */
+  const [groupDragId, setGroupDragId] = useState<string | null>(null);
+  /** Id da opção de agrupamento sob o cursor (destino do "solta aqui"). */
+  const [groupOverId, setGroupOverId] = useState<string | null>(null);
 
   /** Abre/fecha o seletor de icone, posicionando-o sobre o botao (fora do
    * container rolavel, para nao ser recortado pelo popover de configuracoes). */
@@ -230,6 +273,28 @@ export function TableSettingsPopover({
     setPropIconFor(columnId);
   };
 
+  /** Abre/fecha o seletor "Agrupar por", ancorado no botão clicado. */
+  const toggleGroupPicker = () => {
+    if (groupPickerOpen) {
+      setGroupPickerOpen(false);
+      setGroupPickerPos(null);
+      return;
+    }
+    const el = groupBtnRef.current;
+    if (el) {
+      const rect = el.getBoundingClientRect();
+      const pickerWidth = 256;
+      const margin = 8;
+      const left = Math.min(
+        Math.max(margin, rect.left),
+        Math.max(margin, window.innerWidth - pickerWidth - margin),
+      );
+      setGroupPickerPos({ top: rect.bottom + 6, left });
+    }
+    setGroupSearch("");
+    setGroupPickerOpen(true);
+  };
+
   // Ao reabrir o popover, volta para a tela inicial e **fecha os sub-popovers**:
   // o seletor de ícone é um portal (não é filho do popover), então sem isso ele
   // reaparecia aberto depois de fechar e reabrir as configurações.
@@ -244,8 +309,17 @@ export function TableSettingsPopover({
     setPropertySearch("");
     setPropIconFor(null);
     setPropIconPos(null);
+    setGroupPickerOpen(false);
+    setGroupPickerPos(null);
+    setGroupSearch("");
   }, [open, initialView]);
-
+  /** Fecha o seletor "Agrupar por" ao sair da tela de agrupamento. */
+  useEffect(() => {
+    if (view !== "group") {
+      setGroupPickerOpen(false);
+      setGroupPickerPos(null);
+    }
+  }, [view]);
   /** Posição (top/right) do popover, ancorado abaixo do botão de configurações. */
   const [pos, setPos] = useState<{ top: number; right: number } | null>(null);
 
@@ -273,6 +347,12 @@ export function TableSettingsPopover({
   const visibleColumns = searchTerm
     ? columns.filter((c) => c.name.toLowerCase().includes(searchTerm))
     : columns;
+
+  /** Colunas agrupáveis, filtradas pela busca do seletor "Agrupar por". */
+  const groupSearchTerm = groupSearch.trim().toLowerCase();
+  const groupableColumns = tableGroupColumns(columns).filter((c) =>
+    groupSearchTerm ? c.name.toLowerCase().includes(groupSearchTerm) : true,
+  );
 
   /**
    * Visões vinculadas não recebem automações: elas não têm linhas próprias (o
@@ -344,9 +424,11 @@ export function TableSettingsPopover({
                     ? "Alterar tipo"
                     : view === "layout"
                     ? "Layout"
-                    : view === "automations"
-                      ? "Automações"
-                      : "Visibilidade de propriedades"}
+                    : view === "group"
+                      ? "Agrupar"
+                      : view === "automations"
+                        ? "Automações"
+                        : "Visibilidade de propriedades"}
           </span>
           <button
             type="button"
@@ -435,23 +517,33 @@ export function TableSettingsPopover({
                 ) : null}
                 <button
                   type="button"
-                  onClick={() => setView("edit")}
-                  className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
-                >
-                  <SlidersHorizontal className="h-4 w-4 flex-none text-muted-foreground" />
-                  <span className="flex-1 text-[13px] font-medium">
-                    Editar propriedades
-                  </span>
-                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
-                </button>
-                <button
-                  type="button"
                   onClick={() => setView("visibility")}
                   className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
                 >
                   <Eye className="h-4 w-4 flex-none text-muted-foreground" />
                   <span className="flex-1 text-[13px] font-medium">
                     Visibilidade de propriedades
+                  </span>
+                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setView("group")}
+                  className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
+                >
+                  <Layers className="h-4 w-4 flex-none text-muted-foreground" />
+                  <span className="flex-1 text-[13px] font-medium">Agrupar</span>
+                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                </button>
+                <div className="my-1 border-t" />
+                <button
+                  type="button"
+                  onClick={() => setView("edit")}
+                  className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left hover:bg-accent"
+                >
+                  <SlidersHorizontal className="h-4 w-4 flex-none text-muted-foreground" />
+                  <span className="flex-1 text-[13px] font-medium">
+                    Editar propriedades
                   </span>
                   <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
                 </button>
@@ -947,6 +1039,139 @@ export function TableSettingsPopover({
                 </div>
               </div>
             </div>
+          ) : view === "group" ? (
+            <div className="space-y-2 mb-2">
+              <button
+                ref={groupBtnRef}
+                type="button"
+                onClick={toggleGroupPicker}
+                aria-haspopup="menu"
+                aria-expanded={groupPickerOpen}
+                className="flex w-full items-center justify-between gap-2 rounded px-2.5 py-1.5 text-left hover:bg-accent"
+              >
+                <span className="text-[13px] font-medium">Agrupar por</span>
+                <span className="flex min-w-0 flex-1 items-center justify-end gap-2 text-right text-[13px] font-medium text-muted-foreground">
+                  <span className="min-w-0 truncate">
+                    {groupColumnId
+                      ? (columns.find((c) => c.id === groupColumnId)?.name ??
+                        "Nenhum")
+                      : "Nenhum"}
+                  </span>
+                  <ChevronRight className="h-4 w-4 flex-none text-muted-foreground" />
+                </span>
+              </button>
+              {groupColumnId && groupItems.length > 0 ? (
+                <div className="space-y-0.5 border-t pt-2">
+                  <span className="px-2.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+                    Grupos
+                  </span>
+                  <ul className="space-y-0.5">
+                    {groupItems.map((group) => {
+                      const isDragging = groupDragId === group.key;
+                      const showDropBar =
+                        groupOverId === group.key &&
+                        groupDragId !== null &&
+                        groupDragId !== group.key;
+                      return (
+                        <li
+                          key={group.key}
+                          onDragOver={(event) => {
+                            if (!groupDragId) return;
+                            event.preventDefault();
+                            setGroupOverId(group.key);
+                          }}
+                          onDrop={(event) => {
+                            if (!groupDragId) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (groupDragId !== group.key) {
+                              const order = groupItems.map((g) => g.key);
+                              const from = order.indexOf(groupDragId);
+                              const to = order.indexOf(group.key);
+                              if (from >= 0 && to >= 0) {
+                                order.splice(from, 1);
+                                order.splice(to, 0, groupDragId);
+                                onReorderGroups(order);
+                              }
+                            }
+                            setGroupDragId(null);
+                            setGroupOverId(null);
+                          }}
+                          className={cn(
+                            "relative flex items-center gap-1.5 rounded px-2 py-1",
+                            isDragging && "opacity-50",
+                            showDropBar && OPTION_DROP_BAR,
+                          )}
+                        >
+                          <button
+                            type="button"
+                            draggable
+                            onDragStart={(event) => {
+                              setGroupDragId(group.key);
+                              markOptionDrag(event, group.key);
+                            }}
+                            onDragEnd={() => {
+                              setGroupDragId(null);
+                              setGroupOverId(null);
+                            }}
+                            aria-label={`Reordenar grupo ${group.label}`}
+                            title="Arrastar para reordenar"
+                            className="flex h-4 w-3.5 flex-none cursor-grab items-center justify-center text-faint-foreground active:cursor-grabbing"
+                          >
+                            <GripVertical className="h-3.5 w-3.5" />
+                          </button>
+                          <span
+                            className={cn(
+                              "inline-flex min-w-0 max-w-full flex-1 items-center gap-1 rounded px-1.5 py-0.5 text-xs font-medium",
+                              group.color,
+                              group.hidden && "opacity-50",
+                            )}
+                          >
+                            <span className="truncate">{group.label}</span>
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => onToggleGroupHidden(group.key)}
+                            aria-label={`${group.hidden ? "Mostrar" : "Ocultar"} grupo ${group.label}`}
+                            aria-pressed={!group.hidden}
+                            title={
+                              group.hidden ? "Mostrar grupo" : "Ocultar grupo"
+                            }
+                            className={cn(
+                              "flex h-6 w-6 flex-none items-center justify-center rounded hover:bg-accent",
+                              group.hidden
+                                ? "text-muted-foreground"
+                                : "text-foreground",
+                            )}
+                          >
+                            {group.hidden ? (
+                              <EyeOff className="h-3.5 w-3.5" />
+                            ) : (
+                              <Eye className="h-3.5 w-3.5" />
+                            )}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </div>
+              ) : null}
+              {groupColumnId ? (
+                <>
+                  <div className="border-t" />
+                  <button
+                    type="button"
+                    onClick={() => onChangeGroupColumn(null)}
+                    className="flex w-full items-center gap-3 rounded px-2.5 py-1.5 text-left text-muted-foreground hover:bg-accent hover:text-foreground"
+                  >
+                    <X className="h-4 w-4 flex-none" />
+                    <span className="flex-1 text-[13px] font-medium">
+                      Remover agrupamento
+                    </span>
+                  </button>
+                </>
+              ) : null}
+            </div>
           ) : view === "automations" ? (
             <AutomationsPanel
               databaseId={currentDatabaseId}
@@ -1010,8 +1235,9 @@ export function TableSettingsPopover({
             </div>
           ) : null}
           {/* No rodapé da tela de uma propriedade o botão exclui a propriedade;
-              nas demais telas, exclui a tabela. */}
-          {view === "type" ? null : view === "property" && editingColumn ? (
+              nas demais telas, exclui a tabela. A tela de agrupamento não tem
+              rodapé (só o "Remover agrupamento" na própria lista). */}
+          {view === "type" || view === "group" ? null : view === "property" && editingColumn ? (
             <div className="mt-2 border-t pt-2">
               <button
                 type="button"
@@ -1191,6 +1417,91 @@ export function TableSettingsPopover({
                     </button>
                   );
                 })}
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+      {/* Seletor flutuante "Agrupar por": input de busca no topo e a lista de
+          propriedades agrupáveis abaixo (mesma técnica dos seletores de ícone). */}
+      {groupPickerOpen && groupPickerPos
+        ? createPortal(
+            <div
+              data-group-picker
+              style={{
+                top: groupPickerPos.top,
+                left: groupPickerPos.left,
+                maxHeight: Math.max(
+                  160,
+                  window.innerHeight - groupPickerPos.top - 8,
+                ),
+              }}
+              className="fixed z-[70] flex w-64 flex-col overflow-hidden rounded-md border bg-popover shadow-md"
+              role="menu"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="border-b p-2">
+                <Input
+                  value={groupSearch}
+                  onChange={(e) => setGroupSearch(e.target.value)}
+                  placeholder="Buscar propriedade"
+                  aria-label="Buscar propriedade para agrupar"
+                  autoFocus
+                />
+              </div>
+              <div className="flex-1 overflow-y-auto p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChangeGroupColumn(null);
+                    setGroupPickerOpen(false);
+                    setGroupPickerPos(null);
+                  }}
+                  aria-pressed={groupColumnId === null}
+                  className={cn(
+                    "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                    groupColumnId === null && "bg-accent",
+                  )}
+                >
+                  <X className="h-4 w-4 flex-none text-muted-foreground" />
+                  <span className="flex-1">Nenhum</span>
+                  {groupColumnId === null ? (
+                    <Check className="h-4 w-4 flex-none text-primary" />
+                  ) : null}
+                </button>
+                {groupableColumns.map((column) => {
+                  const GroupIcon = columnIcon(column);
+                  const isActive = groupColumnId === column.id;
+                  return (
+                    <button
+                      key={column.id}
+                      type="button"
+                      onClick={() => {
+                        onChangeGroupColumn(column.id);
+                        setGroupPickerOpen(false);
+                        setGroupPickerPos(null);
+                      }}
+                      aria-pressed={isActive}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
+                        isActive && "bg-accent",
+                      )}
+                    >
+                      <GroupIcon className="h-4 w-4 flex-none text-muted-foreground" />
+                      <span className="flex-1 truncate">{column.name}</span>
+                      {isActive ? (
+                        <Check className="h-4 w-4 flex-none text-primary" />
+                      ) : null}
+                    </button>
+                  );
+                })}
+                {groupableColumns.length === 0 ? (
+                  <p className="px-2 py-1.5 text-sm text-muted-foreground">
+                    {tableGroupColumns(columns).length === 0
+                      ? "Nenhuma propriedade agrupável."
+                      : "Nenhuma propriedade encontrada."}
+                  </p>
+                ) : null}
               </div>
             </div>,
             document.body,

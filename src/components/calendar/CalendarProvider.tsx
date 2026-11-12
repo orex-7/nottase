@@ -21,6 +21,7 @@ import { fetchAllDatabaseRows, fetchDatabases } from "@/lib/database";
 import { runAutoTemplates } from "@/lib/database-recurrence";
 import { fetchEventsInRange } from "@/lib/events";
 import { useCalendarStore } from "@/store/useCalendarStore";
+import { useIsDesktop } from "@/lib/use-is-desktop";
 import type { CalendarEvent } from "@/types/event";
 
 interface CalendarProviderProps {
@@ -57,6 +58,9 @@ export function CalendarProvider({
   const closeDialog = useCalendarStore((s) => s.closeDialog);
   const hydrate = useCalendarStore((s) => s.hydrate);
   const sidebarDatabases = useCalendarStore((s) => s.sidebarDatabases);
+  /** No desktop a sidebar ocupa a altura toda (até a title bar) e hospeda o
+   *  alternador Calendário/Workspace no topo. */
+  const isDesktop = useIsDesktop();
 
   const [events, setEvents] = useState<CalendarEvent[]>([]);
   const [databaseEvents, setDatabaseEvents] = useState<CalendarEvent[]>([]);
@@ -317,27 +321,101 @@ export function CalendarProvider({
     setMonth(((total % 12) + 12) % 12);
   }, [month, setMonth, setYear, year]);
 
+  const headerNode = (
+    <Header
+      appView={appView}
+      onChangeAppView={setAppView}
+      year={year}
+      month={month}
+      day={day}
+      viewMode={viewMode}
+      onPrev={goPrev}
+      onNext={goNext}
+      onToday={goToToday}
+      onChangeView={setViewMode}
+      onCreate={handleCreateToday}
+      userName={userName}
+      userEmail={userEmail}
+      userAvatar={userAvatar}
+      onOpenMobileNav={() => setMobileNavOpen(true)}
+      mobileNavOpen={mobileNavOpen}
+      hideAppSwitcher={isDesktop}
+    />
+  );
+
+  const calendarBody = (
+    <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
+      {error ? (
+        <div className="shrink-0 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {error}
+        </div>
+      ) : null}
+
+      <div
+        className={
+          detailsEvent
+            ? "grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[1fr_320px]"
+            : "grid min-h-0 flex-1 grid-cols-1 gap-3"
+        }
+      >
+        <div className="relative min-h-0">
+          {loading ? (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/60">
+              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+            </div>
+          ) : null}
+          <YearCalendar
+            year={year}
+            month={month}
+            day={day}
+            viewMode={viewMode}
+            events={allEvents}
+            selectedDate={selectedDate}
+            onSelectDate={selectDate}
+            onOpenEvent={handleOpenDetails}
+            onCreate={handleCreateDate}
+          />
+        </div>
+
+        {detailsEvent ? (
+          <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card p-4 shadow-sm">
+            <EventDetails
+              event={detailsEvent}
+              onSaved={handleSaved}
+              onDeleted={handleDeleted}
+              onClose={handleCloseDetails}
+            />
+          </aside>
+        ) : null}
+      </div>
+    </div>
+  );
+
+  const calendarSidebar = (
+    <CalendarSidebar
+      year={year}
+      month={month}
+      selectedDate={selectedDate}
+      eventDates={eventDates}
+      onSelectDate={handleSidebarSelectDate}
+      onPrevMonth={handleSidebarPrevMonth}
+      onNextMonth={handleSidebarNextMonth}
+      onToday={goToToday}
+      onOpenDatabase={requestOpenDatabase}
+      onCreateDatabase={requestCreateDatabase}
+      mobileOpen={mobileNavOpen}
+      onCloseMobile={closeMobileNav}
+      showAppSwitcher={isDesktop}
+      appView={appView}
+      onChangeAppView={setAppView}
+      userName={userName}
+      userEmail={userEmail}
+      userAvatar={userAvatar}
+    />
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-      <Header
-        appView={appView}
-        onChangeAppView={setAppView}
-        year={year}
-        month={month}
-        day={day}
-        viewMode={viewMode}
-        onPrev={goPrev}
-        onNext={goNext}
-        onToday={goToToday}
-        onChangeView={setViewMode}
-        onCreate={handleCreateToday}
-        userName={userName}
-        userEmail={userEmail}
-        userAvatar={userAvatar}
-        onOpenMobileNav={() => setMobileNavOpen(true)}
-        mobileNavOpen={mobileNavOpen}
-      />
-
       {/* Fundo escurecido da gaveta do celular: clique fecha. */}
       {mobileNavOpen ? (
         <div
@@ -348,74 +426,37 @@ export function CalendarProvider({
         />
       ) : null}
 
+      {/* Navegador/celular: o cabeçalho span a largura toda (com o alternador
+          Calendário/Workspace). No desktop o cabeçalho fica só na coluna de
+          conteúdo e a sidebar ocupa a altura toda (até a title bar). */}
+      {isDesktop ? null : headerNode}
+
       <div className="flex min-h-0 flex-1 overflow-hidden">
         {appView === "calendar" ? (
-          <>
-            <CalendarSidebar
-              year={year}
-              month={month}
-              selectedDate={selectedDate}
-              eventDates={eventDates}
-              onSelectDate={handleSidebarSelectDate}
-              onPrevMonth={handleSidebarPrevMonth}
-              onNextMonth={handleSidebarNextMonth}
-              onToday={goToToday}
-              onOpenDatabase={requestOpenDatabase}
-              onCreateDatabase={requestCreateDatabase}
-              mobileOpen={mobileNavOpen}
-              onCloseMobile={closeMobileNav}
-            />
-            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-hidden p-3">
-              {error ? (
-                <div className="shrink-0 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-                  {error}
-                </div>
-              ) : null}
-
-              <div
-                className={
-                  detailsEvent
-                    ? "grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[1fr_320px]"
-                    : "grid min-h-0 flex-1 grid-cols-1 gap-3"
-                }
-              >
-                <div className="relative min-h-0">
-                  {loading ? (
-                    <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/60">
-                      <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-                    </div>
-                  ) : null}
-                  <YearCalendar
-                    year={year}
-                    month={month}
-                    day={day}
-                    viewMode={viewMode}
-                    events={allEvents}
-                    selectedDate={selectedDate}
-                    onSelectDate={selectDate}
-                    onOpenEvent={handleOpenDetails}
-                    onCreate={handleCreateDate}
-                  />
-                </div>
-
-                {detailsEvent ? (
-                  <aside className="flex min-h-0 flex-col overflow-hidden rounded-lg border bg-card p-4 shadow-sm">
-                    <EventDetails
-                      event={detailsEvent}
-                      onSaved={handleSaved}
-                      onDeleted={handleDeleted}
-                      onClose={handleCloseDetails}
-                    />
-                  </aside>
-                ) : null}
+          isDesktop ? (
+            <>
+              {calendarSidebar}
+              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+                {headerNode}
+                {calendarBody}
               </div>
-            </div>
-          </>
+            </>
+          ) : (
+            <>
+              {calendarSidebar}
+              {calendarBody}
+            </>
+          )
         ) : (
           <DatabaseView
             userName={userName}
+            userEmail={userEmail}
+            userAvatar={userAvatar}
             mobileNavOpen={mobileNavOpen}
             onCloseMobileNav={closeMobileNav}
+            isDesktop={isDesktop}
+            appView={appView}
+            onChangeAppView={setAppView}
           />
         )}
       </div>

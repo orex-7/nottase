@@ -1,19 +1,17 @@
 "use client";
 
-import { useEffect, useState } from "react";
 import Image from "next/image";
 import {
   ChevronLeft,
   ChevronRight,
   CalendarDays,
   PlusCircle,
-  LogOut,
-  User,
   LayoutDashboard,
   Menu,
 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { UserMenu } from "@/components/calendar/UserMenu";
 import { MONTH_NAMES } from "@/lib/date-utils";
 import { format } from "date-fns";
 import { endOfWeek, startOfWeek } from "date-fns";
@@ -51,6 +49,11 @@ interface HeaderProps {
   onOpenMobileNav: () => void;
   /** Estado da navegação off-canvas, usado no `aria-expanded` do botão. */
   mobileNavOpen: boolean;
+  /**
+   * No desktop o alternador Calendário/Workspace vive no topo da sidebar (que
+   * ocupa a altura toda), então o cabeçalho não o exibe.
+   */
+  hideAppSwitcher?: boolean;
 }
 
 /**
@@ -93,39 +96,8 @@ export function Header({
   userAvatar,
   onOpenMobileNav,
   mobileNavOpen,
+  hideAppSwitcher = false,
 }: HeaderProps) {
-  /** Menu do usuário (avatar) aberto. */
-  const [userMenuOpen, setUserMenuOpen] = useState(false);
-  /** Popover "Conta" (foto/nome/e-mail) aberto, dentro do menu. */
-  const [accountOpen, setAccountOpen] = useState(false);
-
-  // Fecha o menu ao clicar fora ou com Esc (Esc fecha primeiro o "Conta").
-  useEffect(() => {
-    if (!userMenuOpen) return;
-    function onPointerDown(event: PointerEvent) {
-      const target = event.target as HTMLElement | null;
-      if (
-        target?.closest("[data-user-menu-trigger]") ||
-        target?.closest("[data-user-menu]")
-      ) {
-        return;
-      }
-      setUserMenuOpen(false);
-      setAccountOpen(false);
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") return;
-      if (accountOpen) setAccountOpen(false);
-      else setUserMenuOpen(false);
-    }
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("keydown", onKeyDown);
-    return () => {
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("keydown", onKeyDown);
-    };
-  }, [userMenuOpen, accountOpen]);
-
   const anchor = new Date(year, month, day);
   const isCalendar = appView === "calendar";
   const title = isCalendar
@@ -149,9 +121,16 @@ export function Header({
   // z-index explícito, o cabeçalho sticky da tabela (`z-10`) ficava por cima do
   // menu do usuário. Fica abaixo do fundo escuro/gaveta do celular (z-40/z-50).
   return (
-    <header className="relative z-30 shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+    <header
+      className={cn(
+        "app-drag relative z-30 shrink-0 border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80",
+        // No desktop reserva a altura da title bar (controles nativos à
+        // direita) para o conteúdo do cabeçalho não ficar sob eles.
+        hideAppSwitcher && "pt-10",
+      )}
+    >
       <div className="relative flex flex-wrap items-center justify-between gap-3 px-4 py-2">
-        <div className="flex items-center gap-3">
+        <div className="app-no-drag flex items-center gap-3">
           {/* Navegação off-canvas: só no celular (`md:hidden`). */}
           <button
             type="button"
@@ -163,30 +142,32 @@ export function Header({
           >
             <Menu className="h-4 w-4" />
           </button>
-          <div className="flex items-center gap-1">
-            <div className="flex items-center rounded-md border p-0.5">
-              <button
-                type="button"
-                onClick={() => onChangeAppView(calendarOption.view)}
-                aria-label="Calendário"
-                title="Calendário"
-                className={appButtonClass(appView === calendarOption.view)}
-              >
-                <CalendarIcon className="h-3.5 w-3.5" />
-              </button>
+          {hideAppSwitcher ? null : (
+            <div className="flex items-center gap-1">
+              <div className="flex items-center rounded-md border p-0.5">
+                <button
+                  type="button"
+                  onClick={() => onChangeAppView(calendarOption.view)}
+                  aria-label="Calendário"
+                  title="Calendário"
+                  className={appButtonClass(appView === calendarOption.view)}
+                >
+                  <CalendarIcon className="h-3.5 w-3.5" />
+                </button>
+              </div>
+              <div className="flex items-center rounded-md border p-0.5">
+                <button
+                  type="button"
+                  onClick={() => onChangeAppView(workspaceOption.view)}
+                  className={appButtonClass(appView === workspaceOption.view)}
+                >
+                  <WorkspaceIcon className="h-3.5 w-3.5" />
+                  {/* O rótulo some no celular para a barra não quebrar em 3 linhas. */}
+                  <span className="hidden sm:inline">{workspaceOption.label}</span>
+                </button>
+              </div>
             </div>
-            <div className="flex items-center rounded-md border p-0.5">
-              <button
-                type="button"
-                onClick={() => onChangeAppView(workspaceOption.view)}
-                className={appButtonClass(appView === workspaceOption.view)}
-              >
-                <WorkspaceIcon className="h-3.5 w-3.5" />
-                {/* O rótulo some no celular para a barra não quebrar em 3 linhas. */}
-                <span className="hidden sm:inline">{workspaceOption.label}</span>
-              </button>
-            </div>
-          </div>
+          )}
 
           {isCalendar ? (
             <div className="flex items-center gap-2">
@@ -199,20 +180,23 @@ export function Header({
             `pointer-events-none` para não bloquear cliques dos controles;
             escondida em telas estreitas para não sobrepor o título/controles.
             O logo é branco: `brightness-0` o deixa preto no tema claro e
-            `dark:brightness-100` mantém branco no tema escuro. */}
-        <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center sm:flex">
-          <Image
-            src={LOGO_SRC}
-            alt="Nottase"
-            width={LOGO_WIDTH}
-            height={LOGO_HEIGHT}
-            sizes="96px"
-            priority
-            className="h-8 w-auto flex-none object-contain brightness-0 dark:brightness-100"
-          />
-        </div>
+            `dark:brightness-100` mantém branco no tema escuro. No desktop o logo
+            já aparece no topo da sidebar, então some do cabeçalho. */}
+        {hideAppSwitcher ? null : (
+          <div className="pointer-events-none absolute left-1/2 top-1/2 hidden -translate-x-1/2 -translate-y-1/2 items-center sm:flex">
+            <Image
+              src={LOGO_SRC}
+              alt="Nottase"
+              width={LOGO_WIDTH}
+              height={LOGO_HEIGHT}
+              sizes="96px"
+              priority
+              className="h-8 w-auto flex-none object-contain brightness-0 dark:brightness-100"
+            />
+          </div>
+        )}
 
-        <div className="flex flex-wrap items-center gap-1">
+        <div className="app-no-drag flex flex-wrap items-center gap-1">
           {isCalendar ? (
             <>
               <div className="mr-1 flex items-center rounded-md border p-0.5">
@@ -250,108 +234,16 @@ export function Header({
           ) : null}
 
           {/* Lado direito: apenas o avatar. Clicar abre o menu do usuário
-              ("Conta" → foto/nome/e-mail; "Sair" → encerra a sessão). */}
-          <div className="relative ml-2 flex items-center">
-            <button
-              type="button"
-              data-user-menu-trigger
-              onClick={() => {
-                setUserMenuOpen((open) => !open);
-                setAccountOpen(false);
-              }}
-              aria-haspopup="menu"
-              aria-expanded={userMenuOpen}
-              aria-label="Menu do usuário"
-              title={userName}
-              className="flex h-8 w-8 flex-none items-center justify-center overflow-hidden rounded-full border bg-primary/10 transition-colors hover:border-primary/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {userAvatar ? (
-                <Image
-                  src={userAvatar}
-                  alt=""
-                  width={32}
-                  height={32}
-                  unoptimized
-                  referrerPolicy="no-referrer"
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <User className="h-4 w-4 text-primary" />
-              )}
-            </button>
-
-            {userMenuOpen ? (
-              <div
-                data-user-menu
-                role="menu"
-                aria-label="Menu do usuário"
-                className="absolute right-0 top-full z-50 mt-1 w-44 rounded-md border bg-popover p-1 shadow-md"
-              >
-                <button
-                  type="button"
-                  role="menuitem"
-                  onClick={() => setAccountOpen((open) => !open)}
-                  aria-haspopup="menu"
-                  aria-expanded={accountOpen}
-                  className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                >
-                  <User className="h-4 w-4 flex-none" />
-                  Conta
-                  <ChevronRight className="ml-auto h-3.5 w-3.5 flex-none" />
-                </button>
-
-                <form action="/auth/signout" method="post">
-                  <button
-                    type="submit"
-                    role="menuitem"
-                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    <LogOut className="h-4 w-4 flex-none" />
-                    Sair
-                  </button>
-                </form>
-
-                {/* Popover "Conta": foto, nome e e-mail. Abre à esquerda do menu
-                    (o avatar fica na borda direita da tela). */}
-                {accountOpen ? (
-                  <div
-                    data-user-menu
-                    role="dialog"
-                    aria-label="Conta"
-                    className="absolute right-full top-0 mr-1 w-64 rounded-md border bg-popover p-3 shadow-md"
-                  >
-                    <div className="flex items-center gap-3">
-                      <span className="flex h-10 w-10 flex-none items-center justify-center overflow-hidden rounded-full bg-primary/10">
-                        {userAvatar ? (
-                          <Image
-                            src={userAvatar}
-                            alt=""
-                            width={40}
-                            height={40}
-                            unoptimized
-                            referrerPolicy="no-referrer"
-                            className="h-full w-full object-cover"
-                          />
-                        ) : (
-                          <User className="h-5 w-5 text-primary" />
-                        )}
-                      </span>
-                      <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-foreground">
-                          {userName}
-                        </p>
-                        {userEmail ? (
-                          <p className="truncate text-xs text-muted-foreground">
-                            {userEmail}
-                          </p>
-                        ) : null}
-                      </div>
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
-          </div>
+              ("Conta" → foto/nome/e-mail; "Sair" → encerra a sessão). No desktop
+              o perfil já aparece no topo da sidebar, então some do cabeçalho. */}
+          {hideAppSwitcher ? null : (
+            <UserMenu
+              className="ml-2"
+              userName={userName}
+              userEmail={userEmail}
+              userAvatar={userAvatar}
+            />
+          )}
         </div>
       </div>
     </header>

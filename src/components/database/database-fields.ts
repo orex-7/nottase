@@ -166,6 +166,33 @@ export function calcFunctionLabel(fn: CalcFunction): string {
   return CALC_FUNCTIONS.find((f) => f.value === fn)?.label ?? "Contagem";
 }
 
+/**
+ * Funções de "Calcular" que fazem sentido para **qualquer** tipo de coluna
+ * (contagens/porcentagens sobre vazio/preenchido). As demais (soma, média, ...)
+ * só valem para colunas numéricas.
+ */
+const ANY_TYPE_CALC_FUNCTIONS: CalcFunction[] = [
+  "count_all",
+  "count_filled",
+  "count_empty",
+  "count_unique",
+  "percent_filled",
+  "percent_empty",
+];
+
+/**
+ * Funções de "Calcular" oferecidas para uma coluna: numéricas têm todas; os
+ * demais tipos só contagens/porcentagens (o RPC devolve `null` nas outras).
+ */
+export function calcFunctionsForColumn(
+  column: Column,
+): { value: CalcFunction; label: string }[] {
+  if (column.type === "number") return CALC_FUNCTIONS;
+  return CALC_FUNCTIONS.filter((f) =>
+    ANY_TYPE_CALC_FUNCTIONS.includes(f.value),
+  );
+}
+
 export function columnTypeMeta(type: ColumnType) {
   return COLUMN_TYPES.find((t) => t.type === type) ?? COLUMN_TYPES[0];
 }
@@ -469,6 +496,97 @@ export function defaultKanbanColumnId(columns: Column[]): string | null {
   if (candidates.length === 0) return null;
   const status = candidates.find((c) => c.type === "status");
   return (status ?? candidates[0]).id;
+}
+
+/**
+ * Colunas que podem agrupar as linhas da visualização **Tabela** (estilo
+ * Notion): seleção/status (opções viram os grupos) e caixa de seleção
+ * (Sim/Não). Outros tipos ficam de fora por não formarem grupos discretos.
+ */
+export function tableGroupColumns(columns: Column[]): Column[] {
+  return columns.filter(
+    (c) => c.type === "select" || c.type === "status" || c.type === "checkbox",
+  );
+}
+/** Um grupo de linhas da Tabela (valor + rótulo + cor do chip, quando houver). */
+export interface TableGroup {
+  /** Chave do grupo (id da opção, `"__checked"`/`"__unchecked"` ou `"__empty"`). */
+  key: string;
+  /** Rótulo exibido no cabeçalho do grupo. */
+  label: string;
+  /** Classe de cor do chip (só para select/status; vazio nos demais). */
+  color: string;
+  /** Quando `true`, o grupo está oculto na Tabela agrupada (não é exibido). */
+  hidden?: boolean;
+}
+
+/**
+ * Altura (px) do cabeçalho de grupo da Tabela (linha "estilo Notion" com o
+ * valor do grupo). Fixa para a virtualização medir os itens sem reflow.
+ */
+export const TABLE_GROUP_HEADER_HEIGHT = 34;
+
+/**
+ * Quantas linhas de um grupo são exibidas por vez na Tabela agrupada. Acima
+ * disso, aparece o botão "Carregar mais" (revela mais esta quantidade).
+ */
+export const GROUP_ROWS_PAGE_SIZE = 25;
+
+/**
+ * Grupos possíveis de uma coluna agrupável, na ordem em que devem aparecer.
+ * Para select/status usa as opções configuradas; para checkbox, Sim/Não. Um
+ * grupo final "Sem valor" recolhe as linhas sem valor na propriedade.
+ */
+export function tableGroupsForColumn(column: Column): TableGroup[] {
+  if (column.type === "checkbox") {
+    return [
+      { key: "__checked", label: "Marcado", color: "" },
+      { key: "__unchecked", label: "Desmarcado", color: "" },
+    ];
+  }
+  const options = optionsForColumn(column);
+  const groups: TableGroup[] = options.map((opt) => ({
+    key: opt.id,
+    label: opt.label,
+    color: opt.color,
+    hidden: opt.hidden,
+  }));
+  groups.push({ key: "__empty", label: "Sem valor", color: "" });
+  return groups;
+}
+
+/** Chave de grupo de uma linha para a coluna informada (ver `TableGroup.key`). */
+export function tableGroupKeyForRow(column: Column, values: Record<string, unknown>): string {
+  const raw = values[column.id];
+  if (column.type === "checkbox") {
+    // A caixa de seleção guarda `"true"`/`"1"` quando marcada (string), mas
+    // tolera booleano em dados antigos.
+    return raw === true || raw === "true" || raw === "1"
+      ? "__checked"
+      : "__unchecked";
+  }
+  if (typeof raw === "string" && raw.length > 0) return raw;
+  if (Array.isArray(raw) && raw.length > 0 && typeof raw[0] === "string") {
+    return raw[0];
+  }
+  return "__empty";
+}
+
+/**
+ * Valor inicial da coluna de agrupamento ao criar uma linha dentro de um grupo
+ * (botão "Nova linha" do grupo). `null` = sem valor (grupo "Sem valor").
+ */
+export function tableGroupSeedValue(
+  column: Column,
+  groupKey: string,
+): CellValue | null {
+  if (column.type === "checkbox") {
+    if (groupKey === "__checked") return "true";
+    if (groupKey === "__unchecked") return "";
+    return null;
+  }
+  if (groupKey === "__empty") return null;
+  return groupKey;
 }
 
 /* -------------------------------------------------------------------------- */

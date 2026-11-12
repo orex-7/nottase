@@ -1,0 +1,59 @@
+appId: com.nottase.desktop
+productName: Nottase
+copyright: Copyright © 2026
+
+directories:
+  output: dist
+  buildResources: desktop
+
+# Ícone do app (janela, instalador, atalhos). PNG 256x256 em `public/`.
+# O electron-builder converte para `.ico` (Windows) / `.icns` (macOS).
+icon: public/icone.png
+
+# Arquivos do processo principal do Electron (vão para o app.asar).
+files:
+  - desktop/main.js
+  - desktop/preload.js
+  - package.json
+
+# O servidor standalone do Next é grande e precisa de acesso a arquivos reais
+# (não funciona dentro do asar). É copiado como recurso externo.
+# `.next/standalone` já inclui `.next/` interno e `node_modules` mínimos;
+# o passo de build também copia `public/` e `.next/static` para dentro dele.
+# A porta/host do desktop é fixa: http://localhost:4173
+extraResources:
+  - from: .next/standalone
+    to: standalone
+    filter:
+      - "**/*"
+  - from: desktop/build-env.json
+    to: desktop-env.json
+
+win:
+  target:
+    - nsis
+  icon: public/icone.png
+  # Não há assinatura de código (fora de escopo). Desativar a edição/assinatura
+  # do executável evita o download do `winCodeSign`, cuja extração falha no
+  # Windows sem privilégio de symlink / Modo Desenvolvedor.
+  signAndEditExecutable: false
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: Nottase
+
+mac:
+  target:
+    - dmg
+    - zip
+  category: public.app-category.productivity
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Utility

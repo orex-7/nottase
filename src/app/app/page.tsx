@@ -2,7 +2,7 @@ import { CalendarProvider } from "@/components/calendar/CalendarProvider";
 import { createClient } from "@/lib/supabase/server";
 
 export const metadata = {
-  title: "Calendário · Calendário Anual",
+  title: "Nottase · Calendário Anual",
 };
 
 export default async function AppPage() {

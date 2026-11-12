@@ -1,4 +1,4 @@
-# 📅 Calendário Anual — 12 meses
+# 📅 Nottase — 12 meses
 
 Aplicação de calendário com visualização de **12 meses** em grid, navegação por
 ano e gerenciamento completo de eventos (CRUD) por usuário, com **login via
@@ -62,6 +62,9 @@ Em **Authentication → URL Configuration**:
 - **Site URL:** `http://localhost:3000` (em produção, a URL do seu domínio).
 - **Redirect URLs:** adicione `http://localhost:3000/auth/callback`
   (e, em produção, `https://SEU-DOMINIO/auth/callback`).
+- **App desktop (Electron):** adicione também
+  `http://localhost:4173/auth/callback` às **Redirect URLs** (porta fixa do app
+  desktop — veja a seção abaixo).
 
 ### 4. Variáveis de ambiente
 
@@ -89,6 +92,39 @@ npm run dev
 Acesse http://localhost:3000 — você será redirecionado para **/login** e poderá
 entrar com o Google.
 
+## 🖥️ App Desktop (Electron)
+
+O app também pode ser empacotado como aplicativo desktop (Windows/macOS/Linux)
+usando **Electron** com o **servidor Next embutido** (output `standalone`). O
+processo principal sobe o servidor em `http://localhost:4173` (fixo) e carrega a
+janela apontando para ele — o login OAuth e o SSR funcionam igual na web.
+
+### Ação manual no Supabase
+
+Adicione `http://localhost:4173/auth/callback` às **Redirect URLs**
+(Authentication → URL Configuration → Redirect URLs). Sem isso o login do
+desktop falha. O `http://localhost:3000/auth/callback` continua valendo para o
+modo `desktop:dev` (que aponta para o `next dev`).
+
+### Comandos
+
+| Script               | Descrição                                                        |
+| -------------------- | --------------------------------------------------------------- |
+| `npm run desktop:dev`  | Abre o Electron apontando para o `next dev` (`localhost:3000`). Rode `npm run dev` em outro terminal antes. |
+| `npm run desktop:build`| Build de produção + instalador (electron-builder) em `dist/`.    |
+| `npm run desktop:start`| Abre o Electron usando o build standalone já existente.          |
+
+> **Build desktop requer rede:** `next/font/google` baixa as fontes em build time.
+> O build também exige as `NEXT_PUBLIC_*` no `.env` (as chaves são inlinadas em
+> build time e repassadas ao servidor em runtime). O `desktop:build` falha
+> explicitamente se faltar alguma.
+>
+> **Segurança:** o Electron mantém `contextIsolation: true` e
+> `nodeIntegration: false`; links externos abrem no navegador padrão do sistema,
+> exceto o fluxo OAuth (Google/Supabase), que ocorre na própria janela para o
+> callback voltar ao loopback do app. Assinatura de código / auto-update ficam
+> fora do escopo atual.
+
 ## 📜 Scripts
 
 | Script             | Descrição                                  |
@@ -97,11 +133,21 @@ entrar com o Google.
 | `npm run build`    | Build de produção                          |
 | `npm run start`    | Servidor de produção                       |
 | `npm run lint`     | Lint (ESLint via Next)                     |
+| `npm run test`     | Testes (Vitest)                            |
+| `npm run desktop:dev`   | Electron em modo dev (aponta para o `next dev`) |
+| `npm run desktop:build` | Build desktop + instalador (`dist/`)       |
+| `npm run desktop:start` | Electron com o build standalone existente  |
 
 
 ## 🗂️ Estrutura
 
 ```
+desktop/
+├── main.js              # processo principal do Electron (sobe o servidor standalone)
+├── preload.js           # preload mínimo (contexto isolado)
+├── dev.cjs              # inicia o Electron em modo dev (next dev)
+├── build.cjs            # build desktop: env → next build → copia estáticos → electron-builder
+└── electron-builder.yml # configuração do instalador
 supabase/
 ├── schema.sql               # tabelas (events + databases), bucket page-images e RLS (rodar no SQL Editor)
 └── migrations/              # migrations versionadas (alternativa ao schema.sql)

@@ -9,7 +9,7 @@ import { PrivacySection } from "@/components/marketing/PrivacySection";
 import { ShowcaseSection } from "@/components/marketing/ShowcaseSection";
 
 export const metadata = {
-  title: "Calendário Anual · Seu ano inteiro, organizado",
+  title: "Nottase · Seu ano inteiro, organizado",
   description:
     "Calendário anual de 12 meses com visões de semana e mês, workspace estilo Notion (projetos, tabelas e kanban) e editor de páginas. Seus dados são privados.",
 };

@@ -24,6 +24,14 @@ export interface OpenDatabaseBarProps {
   onOpenDatabase: (id: string) => void;
   /** Fecha a aba do database (não o exclui). */
   onCloseDatabase: (id: string) => void;
+  /**
+   * Layout da faixa:
+   * - `"bar"` (padrão): barra de largura total, com fundo e borda próprios
+   *   (usada no navegador, logo abaixo do cabeçalho).
+   * - `"titlebar"`: sem chrome próprio, para encaixar na faixa da barra de
+   *   título do app desktop (ao lado dos controles nativos da janela).
+   */
+  variant?: "bar" | "titlebar";
 }
 
 /**
@@ -42,6 +50,7 @@ export function OpenDatabaseBar({
   onSelectDatabase,
   onOpenDatabase,
   onCloseDatabase,
+  variant = "bar",
 }: OpenDatabaseBarProps) {
   /** Elemento de referência do seletor (a própria faixa); `null` = fechado. */
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
@@ -57,7 +66,12 @@ export function OpenDatabaseBar({
       ref={barRef}
       // Escondida no celular: a troca de database acontece pela gaveta da
       // sidebar; a faixa de abas volta a partir de `md`.
-      className="flex h-7 shrink-0 items-stretch gap-2 border-b bg-card px-4 max-md:hidden"
+      className={cn(
+        "flex items-stretch gap-2 max-md:hidden",
+        variant === "titlebar"
+          ? "h-full min-w-0"
+          : "h-7 shrink-0 border-b bg-card px-4",
+      )}
     >
       <div
         className="no-scrollbar flex min-w-0 items-stretch overflow-x-auto"

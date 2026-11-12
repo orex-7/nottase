@@ -10,7 +10,7 @@ export function LandingFooter() {
           <span className="flex h-7 w-7 items-center justify-center rounded-lg bg-primary/10">
             <CalendarDays className="h-3.5 w-3.5 text-primary" />
           </span>
-          <span className="text-sm font-medium">Calendário Anual</span>
+          <span className="text-sm font-medium">Nottase</span>
         </div>
 
         <nav className="flex items-center gap-4 text-xs text-muted-foreground">
@@ -26,7 +26,7 @@ export function LandingFooter() {
         </nav>
 
         <p className="text-xs text-muted-foreground">
-          © {new Date().getFullYear()} Calendário Anual
+          © {new Date().getFullYear()} Nottase
         </p>
       </div>
     </footer>

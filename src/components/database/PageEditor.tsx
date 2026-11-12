@@ -11,6 +11,8 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Check,
+  ChevronDown,
   Copy,
   Eraser,
   GripHorizontal,
@@ -40,7 +42,9 @@ import {
 import Image from "@tiptap/extension-image";
 import { Extension } from "@tiptap/core";
 import { NodeSelection, Plugin } from "@tiptap/pm/state";
+import { TableMap } from "@tiptap/pm/tables";
 import { Decoration, DecorationSet } from "@tiptap/pm/view";
+import CodeBlockLowlight from "@tiptap/extension-code-block-lowlight";
 import Placeholder from "@tiptap/extension-placeholder";
 import { TableKit } from "@tiptap/extension-table";
 import TaskItem from "@tiptap/extension-task-item";
@@ -48,8 +52,8 @@ import TaskList from "@tiptap/extension-task-list";
 import { EditorContent, useEditor } from "@tiptap/react";
 import { BubbleMenu } from "@tiptap/react/menus";
 import StarterKit from "@tiptap/starter-kit";
+import { common, createLowlight } from "lowlight";
 
-import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { countTasksFromHtml } from "@/lib/markdown";
 import { uploadPageImage } from "@/lib/images";
@@ -79,8 +83,47 @@ const TABLE_HANDLE_MENU_ID = "page-editor-table-handle-menu";
 /** Id do menu contextual da célula da tabela (clique-fora). */
 const TABLE_CELL_MENU_ID = "page-editor-table-cell-menu";
 
+/** Id do menu de seleção de linguagem do bloco de código (clique-fora). */
+const CODE_MENU_ID = "page-editor-code-menu";
+
+/**
+ * Linguagens oferecidas no seletor do bloco de código (rótulo + valor). O valor
+ * é gravado como `class="language-xxx"` no `<pre><code>` (persiste no HTML).
+ * A opção de valor vazio ("Texto puro") não emite classe.
+ */
+const CODE_LANGUAGES: ReadonlyArray<{ value: string; label: string }> = [
+  { value: "", label: "Texto puro" },
+  { value: "javascript", label: "JavaScript" },
+  { value: "typescript", label: "TypeScript" },
+  { value: "jsx", label: "JSX" },
+  { value: "tsx", label: "TSX" },
+  { value: "python", label: "Python" },
+  { value: "json", label: "JSON" },
+  { value: "html", label: "HTML" },
+  { value: "css", label: "CSS" },
+  { value: "sql", label: "SQL" },
+  { value: "bash", label: "Shell" },
+  { value: "markdown", label: "Markdown" },
+];
+
+/** Rótulo exibido para a linguagem do bloco de código (vazio = "Texto puro"). */
+const codeLanguageLabel = (value: string): string =>
+  CODE_LANGUAGES.find((lang) => lang.value === value)?.label ?? "Texto puro";
+
+/**
+ * Instância do lowlight com as linguagens "comuns" do highlight.js, usada pelo
+ * `CodeBlockLowlight` para colorir o bloco de código conforme a linguagem.
+ */
+const lowlight = createLowlight(common);
+
 /** Tamanho (px) do quadradinho da alça de linha/coluna da tabela. */
-const TABLE_HANDLE_SIZE = 16;
+const TABLE_HANDLE_SIZE = 22;
+
+/** Altura (px) do botão de arrastar da COLUNA (mais baixo, estilo Notion). */
+const TABLE_COL_HANDLE_HEIGHT = 16;
+
+/** Largura (px) do botão de arrastar da LINHA (mais estreito, estilo Notion). */
+const TABLE_ROW_HANDLE_WIDTH = 16;
 
 /**
  * Classe aplicada (manualmente) à célula da tabela onde está o cursor, para
@@ -143,6 +186,10 @@ interface TableHandle {
   top: number;
   /** Índice da linha ou coluna (base 0). */
   index: number;
+  /** Largura (px) da coluna — usado pela barrinha de destaque no topo. */
+  width?: number;
+  /** Altura (px) da linha — usado pela barrinha de destaque à esquerda. */
+  height?: number;
 }
 
 /** Alça cujo popover está aberto (com a posição já resolvida). */
@@ -163,6 +210,18 @@ const IMAGE_MENU_INSET = 8;
  * apareça na margem — sem sobrepor o texto da linha.
  */
 const PLUS_GUTTER_LEFT = 4;
+
+/**
+ * Distância (px) da borda esquerda do container até o início do conteúdo da
+ * página. Corresponde ao `padding-left: 2.25rem` (36px) de `.tiptap-content`,
+ * usado para alinhar o popover de inserção à margem do texto.
+ */
+const CONTENT_LEFT = 36;
+
+/** Dimensões padrão da tabela inserida pelo popover do "+". */
+const TABLE_DEFAULT_ROWS = 3;
+const TABLE_DEFAULT_COLS = 3;
+const TABLE_DEFAULT_HEADER = true;
 
 interface PageEditorProps {
   /** Valor HTML atual (fonte da verdade externa). */
@@ -210,6 +269,14 @@ export function PageEditor({
   );
   /** Indica se o popover de inserção (aberto pelo "+") está visível. */
   const [menuOpen, setMenuOpen] = useState(false);
+  /** Container do popover de inserção (usado para decidir abrir p/ cima). */
+  const popoverRef = useRef<HTMLDivElement>(null);
+  /**
+   * Se o popover deve abrir para CIMA (ancorado pela base). Definido quando o
+   * popover não cabe abaixo da linha do cursor (ex.: cursor perto do fim da
+   * tela).
+   */
+  const [menuFlipUp, setMenuFlipUp] = useState(false);
   /** Envio de imagem em andamento (desabilita ações do popover). */
   const [uploading, setUploading] = useState(false);
   /** Mensagem de erro de upload exibida no popover. */
@@ -231,16 +298,11 @@ export function PageEditor({
   const hoveredImagePosRef = useRef<number | null>(null);
   /** Botão de três pontos (usado no clique-fora). */
   const imageMenuButtonRef = useRef<HTMLButtonElement>(null);
-  /** Números de linhas/colunas escolhidos no diálogo de inserir tabela. */
-  const [tableRows, setTableRows] = useState(3);
-  const [tableCols, setTableCols] = useState(3);
-  /** Se a tabela deve começar com uma linha de cabeçalho. */
-  const [tableHeaderRow, setTableHeaderRow] = useState(true);
   /**
    * Aba ativa do popover do "+": menu principal, inserção de imagem ou de
    * tabela. O popover abre no menu principal e navega entre as opções.
    */
-  const [insertTab, setInsertTab] = useState<"menu" | "image" | "table">("menu");
+  const [insertTab, setInsertTab] = useState<"menu" | "image">("menu");
   /**
    * Alças (botões de 6 pontos) das linhas e colunas da tabela sob o cursor,
    * com a posição já resolvida (relativa ao container). Vazio quando o cursor
@@ -259,6 +321,44 @@ export function PageEditor({
     kind: "row" | "col";
     index: number;
   } | null>(null);
+  /**
+   * Índice da coluna sob o mouse (hover). Usado para destacar a coluna inteira
+   * (barrinha no topo) quando o mouse está sobre qualquer célula dela.
+   */
+  const [hoveredColumn, setHoveredColumn] = useState<number | null>(null);
+  /**
+   * Índice da LINHA sob o mouse (hover). Usado para destacar a linha inteira
+   * (barrinha vertical à esquerda) quando o mouse está sobre qualquer célula.
+   */
+  const [hoveredRow, setHoveredRow] = useState<number | null>(null);
+  /**
+   * Posição/dimensões (relativas ao container) do botão "inserir coluna",
+   * exibido como uma faixa vertical à direita da última coluna, com a altura da
+   * tabela. `null` quando não há tabela ativa.
+   */
+  const [insertColPos, setInsertColPos] = useState<{
+    top: number;
+    left: number;
+    height: number;
+    /** Posição (no documento) do nó da tabela. */
+    tablePos: number;
+  } | null>(null);
+  /** Mouse sobre a faixa do botão "inserir coluna". */
+  const [insertColHover, setInsertColHover] = useState(false);
+  /**
+   * Posição/dimensões (relativas ao container) do botão "inserir linha",
+   * exibido como uma faixa horizontal ABAIXO da tabela, com a largura dela.
+   * `null` quando não há tabela ativa.
+   */
+  const [insertRowPos, setInsertRowPos] = useState<{
+    top: number;
+    left: number;
+    width: number;
+    /** Posição (no documento) do nó da tabela. */
+    tablePos: number;
+  } | null>(null);
+  /** Mouse sobre a faixa do botão "inserir linha". */
+  const [insertRowHover, setInsertRowHover] = useState(false);
   /**
    * Alça que está sendo ARRASTADA (para reordenar linhas/colunas). Guarda a
    * origem (`kind` + `index`) e o índice alvo sob o cursor.
@@ -289,6 +389,16 @@ export function PageEditor({
    */
   const updateTableHandlesRef = useRef<(() => void) | null>(null);
 
+  /** Posição (top/left) do botão de linguagem, relativa ao container. */
+  const [codeMenuPos, setCodeMenuPos] = useState<{
+    top: number;
+    left: number;
+  } | null>(null);
+  /** Indica se o dropdown de linguagem do bloco de código está aberto. */
+  const [codeMenuOpen, setCodeMenuOpen] = useState(false);
+  /** Botão de linguagem (usado no clique-fora). */
+  const codeMenuButtonRef = useRef<HTMLButtonElement>(null);
+
   const editor = useEditor({
     immediatelyRender: false,
     extensions: [
@@ -299,7 +409,12 @@ export function PageEditor({
         link: { openOnClick: false, autolink: true },
         // O StarterKit v3 também já registra `underline` (usado na seleção).
         underline: {},
+        // Desativa o `codeBlock` padrão: usamos o `CodeBlockLowlight` (abaixo),
+        // que adiciona coloração de sintaxe (highlight.js) por linguagem.
+        codeBlock: false,
       }),
+      // Bloco de código com syntax highlighting (lowlight/highlight.js).
+      CodeBlockLowlight.configure({ lowlight }),
       TaskList,
       TaskItem.configure({ nested: true }),
       // Imagem inserida via botão "+"/popover (upload no Supabase Storage).
@@ -406,9 +521,10 @@ export function PageEditor({
       return;
     }
     const { from } = ed.state.selection;
-    const start = ed.state.doc.resolve(from).start();
-    // Retângulo do início da linha/bloco onde está o cursor (coordenadas da tela).
-    const rect = ed.view.coordsAtPos(start + 1);
+    // Retângulo da posição ATUAL do cursor (coordenadas da tela). Usar `from`
+    // (e não o início do bloco) faz o "+" acompanhar a linha onde o usuário
+    // clicou, mesmo em parágrafos com várias linhas.
+    const rect = ed.view.coordsAtPos(from);
     const containerRect = container.getBoundingClientRect();
     // Centraliza o botão na altura da linha (não no topo dela).
     const lineCenter = (rect.top + rect.bottom) / 2;
@@ -427,6 +543,13 @@ export function PageEditor({
     editor.on("blur", updatePlusPosition);
     window.addEventListener("scroll", updatePlusPosition, true);
     window.addEventListener("resize", updatePlusPosition);
+    // Reforço: um clique no editor pode não emitir `selectionUpdate` (o cursor
+    // já estava na linha). Recalculamos no clique/mouseup para que o "+"
+    // apareça imediatamente ao clicar, sem precisar digitar.
+    const dom = editor.view.dom;
+    const onPointerUp = () => updatePlusPosition();
+    dom.addEventListener("click", onPointerUp);
+    dom.addEventListener("mouseup", onPointerUp);
     return () => {
       editor.off("selectionUpdate", updatePlusPosition);
       editor.off("transaction", updatePlusPosition);
@@ -434,8 +557,125 @@ export function PageEditor({
       editor.off("blur", updatePlusPosition);
       window.removeEventListener("scroll", updatePlusPosition, true);
       window.removeEventListener("resize", updatePlusPosition);
+      dom.removeEventListener("click", onPointerUp);
+      dom.removeEventListener("mouseup", onPointerUp);
     };
   }, [editor, updatePlusPosition]);
+
+  /**
+   * Decide se o popover de inserção deve abrir para CIMA. Mede a altura real do
+   * popover e o espaço disponível abaixo da linha do cursor; se não couber,
+   * abre para cima (ancorado pela base). Reavalia quando abre, ao trocar de aba
+   * (a altura muda) e em scroll/resize.
+   */
+  useEffect(() => {
+    if (!menuOpen) {
+      setMenuFlipUp(false);
+      return;
+    }
+    const measure = () => {
+      const popover = popoverRef.current;
+      const container = containerRef.current;
+      if (!popover || !container) return;
+      const margin = 8;
+      const popoverHeight = popover.offsetHeight;
+      // Borda superior do popover na tela = topo do container + top do popover
+      // (relativo ao container) menos o que o container já rolou.
+      const topInViewport =
+        container.getBoundingClientRect().top +
+        (plusPos?.top ?? 0) -
+        container.scrollTop;
+      const spaceBelow = window.innerHeight - topInViewport - margin;
+      setMenuFlipUp(spaceBelow < popoverHeight && topInViewport > popoverHeight);
+    };
+    measure();
+    window.addEventListener("resize", measure);
+    window.addEventListener("scroll", measure, true);
+    return () => {
+      window.removeEventListener("resize", measure);
+      window.removeEventListener("scroll", measure, true);
+    };
+  }, [menuOpen, insertTab, plusPos]);
+
+  /**
+   * Calcula a posição do botão de linguagem no canto superior direito do bloco
+   * de código sob o cursor, relativa ao container do editor. Esconde o botão
+   * quando o cursor não está num `codeBlock` (mas mantém a posição enquanto o
+   * dropdown está aberto, pois o foco sai do editor ao interagir com ele).
+   */
+  const updateCodeMenuPosition = useCallback(() => {
+    const ed = editor;
+    const container = containerRef.current;
+    if (!ed || !container || !ed.isActive("codeBlock")) {
+      if (codeMenuOpen) return;
+      setCodeMenuPos(null);
+      return;
+    }
+
+    // Localiza o nó `codeBlock` que contém o cursor.
+    const { $from } = ed.state.selection;
+    let codePos = -1;
+    for (let depth = $from.depth; depth > 0; depth -= 1) {
+      if ($from.node(depth).type.name === "codeBlock") {
+        codePos = $from.before(depth);
+        break;
+      }
+    }
+    if (codePos < 0) {
+      if (codeMenuOpen) return;
+      setCodeMenuPos(null);
+      return;
+    }
+
+    const dom = ed.view.nodeDOM(codePos);
+    if (!(dom instanceof HTMLElement)) {
+      if (codeMenuOpen) return;
+      setCodeMenuPos(null);
+      return;
+    }
+
+    const rect = dom.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    setCodeMenuPos({
+      top: rect.top - containerRect.top + container.scrollTop + 4,
+      left: rect.right - containerRect.left - 4,
+    });
+  }, [editor, codeMenuOpen]);
+
+  // Reposiciona o botão de linguagem a cada mudança de seleção/transação e em
+  // scroll/resize (o bloco pode se mover). Aproveita a lista de eventos do "+".
+  useEffect(() => {
+    if (!editor) return;
+    editor.on("selectionUpdate", updateCodeMenuPosition);
+    editor.on("transaction", updateCodeMenuPosition);
+    editor.on("focus", updateCodeMenuPosition);
+    editor.on("blur", updateCodeMenuPosition);
+    window.addEventListener("scroll", updateCodeMenuPosition, true);
+    window.addEventListener("resize", updateCodeMenuPosition);
+    updateCodeMenuPosition();
+    return () => {
+      editor.off("selectionUpdate", updateCodeMenuPosition);
+      editor.off("transaction", updateCodeMenuPosition);
+      editor.off("focus", updateCodeMenuPosition);
+      editor.off("blur", updateCodeMenuPosition);
+      window.removeEventListener("scroll", updateCodeMenuPosition, true);
+      window.removeEventListener("resize", updateCodeMenuPosition);
+    };
+  }, [editor, updateCodeMenuPosition]);
+
+  // Fecha o dropdown de linguagem ao clicar fora dele.
+  useEffect(() => {
+    if (!codeMenuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (codeMenuButtonRef.current?.contains(target)) return;
+      const popover = document.getElementById(CODE_MENU_ID);
+      if (popover?.contains(target)) return;
+      setCodeMenuOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [codeMenuOpen]);
 
   /**
    * Calcula as posições das alças (botões de 6 pontos) de cada LINHA (à
@@ -452,6 +692,8 @@ export function PageEditor({
     if (!ed || !container || !ed.isActive("table")) {
       setTableRowHandles((prev) => (prev.length ? [] : prev));
       setTableColHandles((prev) => (prev.length ? [] : prev));
+      setInsertColPos(null);
+      setInsertRowPos(null);
       return;
     }
 
@@ -508,6 +750,7 @@ export function PageEditor({
         // (a linha física da grade), como no Notion.
         left: r.left + r.width / 2,
         top: tableRect.top,
+        width: r.width,
       };
     });
 
@@ -521,8 +764,29 @@ export function PageEditor({
           // Sobre a borda esquerda da tabela, no centro vertical da linha.
           left: tableRect.left,
           top: r.top + r.height / 2,
+          height: r.height,
         };
       });
+
+    // --- Botão "+" (inserir coluna): faixa vertical à direita da última
+    // coluna, com a ALTURA da tabela, dentro da margem direita da página. ---
+    setInsertColPos({
+      top: tableRect.top,
+      height: tableRect.height,
+      // Logo à direita da tabela; fica dentro do gutter (padding-right) da
+      // página, então não estoura a margem.
+      left: tableRect.left + tableRect.width + 4,
+      tablePos,
+    });
+
+    // --- Botão "+" (inserir linha): faixa horizontal ABAIXO da tabela, com a
+    // LARGURA dela. ---
+    setInsertRowPos({
+      top: tableRect.top + tableRect.height + 4,
+      left: tableRect.left,
+      width: tableRect.width,
+      tablePos,
+    });
 
     // --- Botão "⋮" da CÉLULA ativa (menu contextual), no canto sup. direito. ---
     const cellPos = gridIndexAtCursor(ed);
@@ -873,6 +1137,19 @@ export function PageEditor({
   };
 
   /**
+   * Insere um bloco de código (`codeBlock` do `StarterKit`) na posição atual do
+   * cursor, transformando o parágrafo em bloco monoespaçado. A linguagem vazia
+   * ("Texto puro") não emite a classe `language-xxx`.
+   */
+  const insertCodeBlock = (language: string) => {
+    editor
+      .chain()
+      .focus()
+      .setCodeBlock(language ? { language } : undefined)
+      .run();
+  };
+
+  /**
    * Executa um comando de tabela devolvendo o foco ao editor (os botões do
    * popover/menu desviam o foco para fora da área editável).
    */
@@ -917,6 +1194,39 @@ export function PageEditor({
         : editor.chain().addColumnAfter().run(),
     );
     setTableHandleMenu(null);
+  };
+  /**
+   * Insere uma coluna à direita da ÚLTIMA coluna da tabela, mesmo quando o
+   * cursor NÃO está dentro dela (o botão "+" fica fora da tabela). Posiciona o
+   * cursor na primeira célula da última coluna (via posição da tabela) e então
+   * insere a coluna.
+   */
+  const insertColumnAfterLast = () => {
+    const pos = insertColPos?.tablePos;
+    if (pos == null) return;
+    const table = editor.state.doc.nodeAt(pos);
+    if (!table || table.type.name !== "table") return;
+    const map = TableMap.get(table);
+    const lastCol = map.width - 1;
+    const cellPos = pos + map.positionAt(0, lastCol, table);
+    editor.chain().focus().setTextSelection(cellPos + 1).run();
+    editor.chain().addColumnAfter().run();
+  };
+  /**
+   * Insere uma linha ABAIXO da última linha da tabela, mesmo quando o cursor
+   * NÃO está dentro dela (o botão "+" fica fora da tabela). Posiciona o cursor
+   * na primeira célula da última linha (via posição da tabela) e então insere.
+   */
+  const insertRowAfterLast = () => {
+    const pos = insertRowPos?.tablePos;
+    if (pos == null) return;
+    const table = editor.state.doc.nodeAt(pos);
+    if (!table || table.type.name !== "table") return;
+    const map = TableMap.get(table);
+    const lastRow = map.height - 1;
+    const cellPos = pos + map.positionAt(lastRow, 0, table);
+    editor.chain().focus().setTextSelection(cellPos + 1).run();
+    editor.chain().addRowAfter().run();
   };
   /** Exclui a linha `index` (base 0). Usado pelo popover das alças de linha. */
   const deleteRowAt = (index: number) => {
@@ -1106,6 +1416,22 @@ export function PageEditor({
     if (!editor) return;
     const target = e.target as HTMLElement;
     if (target.closest("[data-image-menu]")) return;
+
+    // Destaca a coluna da tabela sob o mouse (barrinha no topo com a alça).
+    const cell = target.closest("td, th") as HTMLTableCellElement | null;
+    if (cell && editor.view.dom.contains(cell)) {
+      setHoveredColumn((prev) =>
+        prev === cell.cellIndex ? prev : cell.cellIndex,
+      );
+      // Índice da LINHA da célula (para a barrinha vertical à esquerda).
+      const row = cell.parentElement as HTMLTableRowElement | null;
+      const rowIndex = row ? row.rowIndex : null;
+      setHoveredRow((prev) => (prev === rowIndex ? prev : rowIndex));
+    } else {
+      setHoveredColumn(null);
+      setHoveredRow(null);
+    }
+
     const img = target.closest("img");
     if (!img || !editor.view.dom.contains(img)) return;
     try {
@@ -1122,6 +1448,8 @@ export function PageEditor({
 
   /** Ao sair da imagem (ou do container), esconde o botão de hover. */
   const handleImageMouseLeave = () => {
+    setHoveredColumn(null);
+    setHoveredRow(null);
     if (hoveredImagePosRef.current == null) return;
     hoveredImagePosRef.current = null;
     updateImageMenuPosition();
@@ -1154,6 +1482,26 @@ export function PageEditor({
 
   const html = editor.getHTML();
   const { done, total } = countTasksFromHtml(html);
+  /**
+   * Célula ativa (onde está o cursor), em índices DOM (`rowIndex`/`cellIndex`,
+   * os mesmos usados pelas alças). Calculado a cada render (o componente
+   * re-renderiza a cada transação) para manter as barrinhas da coluna/linha
+   * visíveis mesmo sem hover.
+   */
+  const activeCell = (() => {
+    try {
+      const { from } = editor.state.selection;
+      const dom = editor.view.domAtPos(from).node as Node;
+      const el =
+        dom instanceof HTMLElement ? dom : dom.parentElement;
+      const cell = el?.closest("td, th") as HTMLTableCellElement | null;
+      if (!cell) return null;
+      const row = cell.parentElement as HTMLTableRowElement | null;
+      return row ? { row: row.rowIndex, col: cell.cellIndex } : null;
+    } catch {
+      return null;
+    }
+  })();
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2">
@@ -1195,27 +1543,22 @@ export function PageEditor({
             {/* Popover de inserção de blocos (imagem e tabela). */}
             {menuOpen && plusPos ? (
               <div
+                ref={popoverRef}
                 id={POPOVER_ID}
                 role="dialog"
                 aria-label="Inserir bloco"
                 className="absolute z-30 w-72 max-w-[calc(100vw-1rem)] overflow-hidden rounded-lg border bg-popover p-3 text-popover-foreground shadow-xl"
                 style={{
                   top: plusPos.top,
-                  left: Math.max(PLUS_GUTTER_LEFT - 4, 0),
+                  left: CONTENT_LEFT,
+                  // Perto do fim da tela, abre para cima (ancorado pela base).
+                  transform: menuFlipUp ? "translateY(-100%)" : undefined,
                 }}
               >
                 <div className="mb-2 flex items-center gap-2">
-                  {insertTab === "table" ? (
-                    <Table2 className="h-4 w-4 text-muted-foreground" />
-                  ) : (
-                    <ImageIcon className="h-4 w-4 text-muted-foreground" />
-                  )}
+                  <ImageIcon className="h-4 w-4 text-muted-foreground" />
                   <span className="text-sm font-semibold">
-                    {insertTab === "menu"
-                      ? "Inserir bloco"
-                      : insertTab === "table"
-                        ? "Adicionar tabela"
-                        : "Adicionar imagem"}
+                    {insertTab === "menu" ? "Inserir bloco" : "Adicionar imagem"}
                   </span>
                   {insertTab !== "menu" ? (
                     <button
@@ -1248,51 +1591,46 @@ export function PageEditor({
                     <button
                       type="button"
                       onClick={() => setInsertTab("image")}
-                      className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-accent"
+                      className="flex w-full items-center gap-3 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-accent"
                     >
-                      <span className="flex h-7 w-7 flex-none items-center justify-center rounded border bg-background">
+                      <span className="flex h-5 w-5 flex-none items-center justify-center">
                         <ImageIcon className="h-4 w-4" />
                       </span>
-                      <span className="flex flex-col leading-tight">
-                        <span className="font-medium">Imagem</span>
-                        <span className="text-[11px] text-muted-foreground">
-                          Envie do computador ou cole uma URL
-                        </span>
-                      </span>
+                      <span className="font-medium">Imagem</span>
                     </button>
                     <button
                       type="button"
-                      onClick={() => setInsertTab("table")}
-                      className="flex w-full items-center gap-3 rounded-md px-2 py-2 text-left text-sm transition-colors hover:bg-accent"
+                      onClick={() => {
+                        insertTable(
+                          TABLE_DEFAULT_ROWS,
+                          TABLE_DEFAULT_COLS,
+                          TABLE_DEFAULT_HEADER,
+                        );
+                        setMenuOpen(false);
+                        setInsertTab("menu");
+                      }}
+                      className="flex w-full items-center gap-3 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-accent"
                     >
-                      <span className="flex h-7 w-7 flex-none items-center justify-center rounded border bg-background">
+                      <span className="flex h-5 w-5 flex-none items-center justify-center">
                         <Table2 className="h-4 w-4" />
                       </span>
-                      <span className="flex flex-col leading-tight">
-                        <span className="font-medium">Tabela</span>
-                        <span className="text-[11px] text-muted-foreground">
-                          Defina linhas, colunas e cabeçalho
-                        </span>
+                      <span className="font-medium">Tabela</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        insertCodeBlock("");
+                        setMenuOpen(false);
+                        setInsertTab("menu");
+                      }}
+                      className="flex w-full items-center gap-3 rounded-md px-2 py-1 text-left text-sm transition-colors hover:bg-accent"
+                    >
+                      <span className="flex h-5 w-5 flex-none items-center justify-center">
+                        <Code className="h-4 w-4" />
                       </span>
+                      <span className="font-medium">Código</span>
                     </button>
                   </div>
-                ) : null}
-
-                {/* Aba: inserir tabela. */}
-                {insertTab === "table" ? (
-                  <TableInsertForm
-                    rows={tableRows}
-                    cols={tableCols}
-                    withHeaderRow={tableHeaderRow}
-                    onRowsChange={setTableRows}
-                    onColsChange={setTableCols}
-                    onHeaderRowChange={setTableHeaderRow}
-                    onInsert={() => {
-                      insertTable(tableRows, tableCols, tableHeaderRow);
-                      setMenuOpen(false);
-                      setInsertTab("menu");
-                    }}
-                  />
                 ) : null}
 
                 {/* Aba: inserir imagem. */}
@@ -1400,76 +1738,262 @@ export function PageEditor({
               </div>
             ) : null}
 
+            {/* Botão de linguagem no canto superior direito do bloco de código
+                sob o cursor. Abre o dropdown de troca de linguagem. */}
+            {codeMenuPos && !codeMenuOpen ? (
+              <button
+                ref={codeMenuButtonRef}
+                type="button"
+                data-code-menu
+                aria-label="Linguagem do bloco de código"
+                title="Alterar linguagem"
+                // preventDefault mantém o foco/cursor no bloco de código.
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setCodeMenuOpen(true)}
+                className="absolute z-20 flex -translate-x-full items-center gap-1 whitespace-nowrap rounded border bg-popover/90 px-1.5 py-0.5 text-[11px] text-muted-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-accent hover:text-foreground"
+                style={{ top: codeMenuPos.top, left: codeMenuPos.left }}
+              >
+                {codeLanguageLabel(
+                  editor.getAttributes("codeBlock").language ?? "",
+                )}
+                <ChevronDown className="h-3 w-3" />
+              </button>
+            ) : null}
+
+            {/* Dropdown de seleção de linguagem do bloco de código. */}
+            {codeMenuOpen && codeMenuPos ? (
+              <div
+                id={CODE_MENU_ID}
+                role="dialog"
+                data-code-menu
+                aria-label="Linguagem do bloco de código"
+                onMouseDown={(e) => e.preventDefault()}
+                className="absolute z-30 max-h-64 w-40 -translate-x-full overflow-auto rounded-lg border bg-popover p-1 text-popover-foreground shadow-xl"
+                style={{ top: codeMenuPos.top, left: codeMenuPos.left }}
+              >
+                {CODE_LANGUAGES.map((lang) => {
+                  const current =
+                    (editor.getAttributes("codeBlock").language ?? "") ===
+                    lang.value;
+                  return (
+                    <button
+                      key={lang.value || "plain"}
+                      type="button"
+                      onClick={() => {
+                        editor
+                          .chain()
+                          .focus()
+                          .updateAttributes("codeBlock", {
+                            language: lang.value,
+                          })
+                          .run();
+                        setCodeMenuOpen(false);
+                      }}
+                      className={cn(
+                        "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent",
+                        current && "font-medium text-foreground",
+                      )}
+                    >
+                      <Check
+                        className={cn(
+                          "h-3.5 w-3.5 flex-none",
+                          current ? "opacity-100" : "opacity-0",
+                        )}
+                      />
+                      {lang.label}
+                    </button>
+                  );
+                })}
+              </div>
+            ) : null}
+
             {/* Alças de COLUNA: um botão de 6 pontos acima de cada coluna.
                 Clique abre o popover (inserir/excluir/duplicar). Arrastar
-                reordena a coluna. O botão só aparece com o mouse sobre ele. */}
+                reordena a coluna. Ao passar o mouse sobre QUALQUER célula da
+                coluna, aparece uma barrinha no topo dela com a alça. */}
             {tableColHandles.map((h) => {
-              const active =
+              // O botão de arrastar aparece ao passar o mouse sobre a barrinha da
+              // coluna, e permanece enquanto o menu/arraste está em andamento.
+              const showHandle =
                 (hoveredHandle?.kind === "col" &&
                   hoveredHandle.index === h.index) ||
                 (tableHandleMenu?.kind === "col" &&
                   tableHandleMenu.index === h.index) ||
                 (dragHandle?.kind === "col" &&
                   (dragHandle.from === h.index || dragHandle.over === h.index));
+              // Barrinha (e sua área de hover) visível quando o mouse está sobre
+              // a coluna.
+              const showBarArea =
+                hoveredColumn === h.index || activeCell?.col === h.index;
               return (
-                <button
-                  key={`col-${h.index}`}
-                  type="button"
-                  data-table-handle
-                  draggable
-                  aria-label={`Opções da coluna ${h.index + 1}`}
-                  title="Clique para opções · arraste para mover"
-                  // preventDefault mantém o foco/cursor no editor.
-                  onMouseDown={(e) => e.preventDefault()}
-                  onMouseEnter={() =>
-                    setHoveredHandle({ kind: "col", index: h.index })
-                  }
-                  onMouseLeave={() => setHoveredHandle(null)}
-                  onDragStart={() =>
-                    setDragHandle({ kind: "col", from: h.index, over: h.index })
-                  }
-                  onDragOver={(e) => {
-                    if (dragHandle?.kind !== "col") return;
-                    e.preventDefault();
-                    if (dragHandle.over !== h.index) {
-                      setDragHandle({ ...dragHandle, over: h.index });
+                <div key={`col-${h.index}`}>
+                  {showBarArea ? (
+                    <>
+                      {/* Recorte sem cor na linha de topo da célula (16px,
+                          centrado na coluna) para a barrinha não encostar na
+                          borda. */}
+                      <div
+                        aria-hidden
+                        className="pointer-events-none absolute z-10 bg-card"
+                        style={{
+                          top: h.top - 1,
+                          left: h.left - 8,
+                          width: 16,
+                          height: 3,
+                        }}
+                      />
+                      <div
+                        // Área de hover (transparente) da barrinha: mais alta
+                        // que a linha visível para facilitar o hover; revela a
+                        // alça.
+                        onMouseEnter={() =>
+                          setHoveredHandle({ kind: "col", index: h.index })
+                        }
+                        onMouseLeave={() => setHoveredHandle(null)}
+                        className="absolute z-20 cursor-pointer"
+                        style={{
+                          top: h.top - 8,
+                          // Área de hover da barrinha: 16px de largura,
+                          // centralizada na coluna.
+                          left: h.left - 8,
+                          width: 16,
+                          height: 18,
+                        }}
+                      >
+                        <span
+                          className={cn(
+                            "absolute left-[2px] top-[8px] block rounded-full bg-faint-foreground transition-colors",
+                            !showHandle && "hover:bg-foreground/70",
+                            showHandle && "opacity-0",
+                          )}
+                          // Linha colorida: 12px, centralizada (2px sem cor de
+                          // cada lado).
+                          style={{ height: 2, width: 12 }}
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    data-table-handle
+                    draggable
+                    aria-label={`Opções da coluna ${h.index + 1}`}
+                    title="Clique para opções · arraste para mover"
+                    // preventDefault mantém o foco/cursor no editor.
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() =>
+                      setHoveredHandle({ kind: "col", index: h.index })
                     }
-                  }}
-                  onDragEnd={commitHandleDrag}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    commitHandleDrag();
-                  }}
-                  onClick={() =>
-                    setTableHandleMenu((prev) =>
-                      prev && prev.kind === "col" && prev.index === h.index
-                        ? null
-                        : { ...h, kind: "col" },
-                    )
-                  }
-                  className={cn(
-                    "absolute z-20 flex cursor-grab items-center justify-center rounded border bg-popover text-muted-foreground shadow-sm transition-opacity active:cursor-grabbing",
-                    active ? "opacity-100" : "opacity-0",
-                    dragHandle?.kind === "col" && dragHandle.over === h.index
-                      ? "ring-2 ring-[hsl(var(--table-select))]"
-                      : "",
-                  )}
-                  style={{
-                    top: h.top,
-                    left: h.left,
-                    width: TABLE_HANDLE_SIZE,
-                    height: TABLE_HANDLE_SIZE,
-                    transform: "translate(-50%, -50%)",
-                  }}
-                >
-                  <GripHorizontal className="h-3 w-3" />
-                </button>
+                    onMouseLeave={() => setHoveredHandle(null)}
+                    onDragStart={() =>
+                      setDragHandle({ kind: "col", from: h.index, over: h.index })
+                    }
+                    onDragOver={(e) => {
+                      if (dragHandle?.kind !== "col") return;
+                      e.preventDefault();
+                      if (dragHandle.over !== h.index) {
+                        setDragHandle({ ...dragHandle, over: h.index });
+                      }
+                    }}
+                    onDragEnd={commitHandleDrag}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      commitHandleDrag();
+                    }}
+                    onClick={() =>
+                      setTableHandleMenu((prev) =>
+                        prev && prev.kind === "col" && prev.index === h.index
+                          ? null
+                          : { ...h, kind: "col" },
+                      )
+                    }
+                    className={cn(
+                      "absolute z-20 flex cursor-grab items-center justify-center rounded border bg-popover text-muted-foreground shadow-sm transition-opacity active:cursor-grabbing",
+                      showHandle ? "opacity-100" : "pointer-events-none opacity-0",
+                      dragHandle?.kind === "col" && dragHandle.over === h.index
+                        ? "ring-2 ring-[hsl(var(--table-select))]"
+                        : "",
+                    )}
+                    style={{
+                      // Centralizado SOBRE a linha de topo da primeira célula
+                      // da coluna.
+                      top: h.top,
+                      left: h.left,
+                      width: TABLE_HANDLE_SIZE,
+                      height: TABLE_COL_HANDLE_HEIGHT,
+                      transform: "translate(-50%, -50%)",
+                    }}
+                  >
+                    <GripHorizontal className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               );
             })}
 
+            {/* Botão "+" para inserir uma coluna à direita da última coluna:
+                faixa vertical com a ALTURA da tabela, dentro da margem da
+                página. A faixa fica sempre presente como área de hover e se
+                revela ao passar o mouse sobre a última coluna OU sobre a
+                própria faixa. */}
+            {insertColPos && tableColHandles.length > 0 ? (
+              <button
+                type="button"
+                aria-label="Inserir coluna à direita"
+                title="Inserir coluna à direita"
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setInsertColHover(true)}
+                onMouseLeave={() => setInsertColHover(false)}
+                onClick={insertColumnAfterLast}
+                className={cn(
+                  "absolute z-20 flex w-5 items-center justify-center rounded border transition-colors",
+                  hoveredColumn === tableColHandles.length - 1 ||
+                    insertColHover
+                    ? "border-transparent bg-muted/40 text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground"
+                    : "border-transparent bg-transparent text-transparent",
+                )}
+                style={{
+                  top: insertColPos.top,
+                  left: insertColPos.left,
+                  height: insertColPos.height,
+                }}
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            ) : null}
+
+            {/* Botão "+" para inserir uma linha ABAIXO da última linha: faixa
+                horizontal com a LARGURA da tabela. A faixa fica sempre presente
+                como área de hover e se revela ao passar o mouse sobre a última
+                linha OU sobre a própria faixa. */}
+            {insertRowPos && tableRowHandles.length > 0 ? (
+              <button
+                type="button"
+                aria-label="Inserir linha abaixo"
+                title="Inserir linha abaixo"
+                onMouseDown={(e) => e.preventDefault()}
+                onMouseEnter={() => setInsertRowHover(true)}
+                onMouseLeave={() => setInsertRowHover(false)}
+                onClick={insertRowAfterLast}
+                className={cn(
+                  "absolute z-20 flex h-5 items-center justify-center rounded border transition-colors",
+                  hoveredRow === tableRowHandles.length - 1 || insertRowHover
+                    ? "border-transparent bg-muted/40 text-muted-foreground hover:border-border hover:bg-accent hover:text-foreground"
+                    : "border-transparent bg-transparent text-transparent",
+                )}
+                style={{
+                  top: insertRowPos.top,
+                  left: insertRowPos.left,
+                  width: insertRowPos.width,
+                }}
+              >
+                <Plus className="h-4 w-4" />
+              </button>
+            ) : null}
+
             {/* Alças de LINHA: um botão de 6 pontos à esquerda de cada linha.
                 Clique abre o popover (inserir/excluir/duplicar). Arrastar
-                reordena a linha. O botão só aparece com o mouse sobre ele. */}
+                reordena a linha. Ao passar o mouse sobre qualquer célula da
+                linha, aparece uma barrinha vertical à esquerda dela. */}
             {tableRowHandles.map((h) => {
               const active =
                 (hoveredHandle?.kind === "row" &&
@@ -1478,58 +2002,108 @@ export function PageEditor({
                   tableHandleMenu.index === h.index) ||
                 (dragHandle?.kind === "row" &&
                   (dragHandle.from === h.index || dragHandle.over === h.index));
+              // Barrinha (e área de hover) visível quando o mouse está sobre a
+              // linha.
+              const showBarArea =
+                hoveredRow === h.index || activeCell?.row === h.index;
+              const rowHeight = h.height ?? TABLE_HANDLE_SIZE;
+              const barLen = Math.min(12, Math.max(6, rowHeight - 4));
               return (
-                <button
-                  key={`row-${h.index}`}
-                  type="button"
-                  data-table-handle
-                  draggable
-                  aria-label={`Opções da linha ${h.index + 1}`}
-                  title="Clique para opções · arraste para mover"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onMouseEnter={() =>
-                    setHoveredHandle({ kind: "row", index: h.index })
-                  }
-                  onMouseLeave={() => setHoveredHandle(null)}
-                  onDragStart={() =>
-                    setDragHandle({ kind: "row", from: h.index, over: h.index })
-                  }
-                  onDragOver={(e) => {
-                    if (dragHandle?.kind !== "row") return;
-                    e.preventDefault();
-                    if (dragHandle.over !== h.index) {
-                      setDragHandle({ ...dragHandle, over: h.index });
+                <div key={`row-${h.index}`}>
+                  {showBarArea ? (
+                    <>
+                      {/* Recorte sem cor na linha esquerda da célula (16px,
+                          centrado na linha) para a barrinha não encostar na
+                          borda. */}
+                      <div
+                        aria-hidden
+                        className="pointer-events-none absolute z-10 bg-card"
+                        style={{
+                          left: h.left - 1,
+                          top: h.top - 8,
+                          width: 3,
+                          height: 16,
+                        }}
+                      />
+                      <div
+                        // Área de hover (transparente) da barrinha; revela a
+                        // alça da linha.
+                        onMouseEnter={() =>
+                          setHoveredHandle({ kind: "row", index: h.index })
+                        }
+                        onMouseLeave={() => setHoveredHandle(null)}
+                        className="absolute z-20 cursor-pointer"
+                        style={{
+                          left: h.left - 8,
+                          top: h.top - 8,
+                          width: 18,
+                          height: 16,
+                        }}
+                      >
+                        <span
+                          className={cn(
+                            "absolute left-[8px] top-[2px] block rounded-full bg-faint-foreground transition-colors",
+                            !active && "hover:bg-foreground/70",
+                            active && "opacity-0",
+                          )}
+                          // Linha colorida: 12px (ou menos em linhas baixas),
+                          // centralizada (2px sem cor de cada lado).
+                          style={{ width: 2, height: barLen }}
+                        />
+                      </div>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    data-table-handle
+                    draggable
+                    aria-label={`Opções da linha ${h.index + 1}`}
+                    title="Clique para opções · arraste para mover"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onMouseEnter={() =>
+                      setHoveredHandle({ kind: "row", index: h.index })
                     }
-                  }}
-                  onDragEnd={commitHandleDrag}
-                  onDrop={(e) => {
-                    e.preventDefault();
-                    commitHandleDrag();
-                  }}
-                  onClick={() =>
-                    setTableHandleMenu((prev) =>
-                      prev && prev.kind === "row" && prev.index === h.index
-                        ? null
-                        : { ...h, kind: "row" },
-                    )
-                  }
-                  className={cn(
-                    "absolute z-20 flex cursor-grab items-center justify-center rounded border bg-popover text-muted-foreground shadow-sm transition-opacity active:cursor-grabbing",
-                    active ? "opacity-100" : "opacity-0",
-                    dragHandle?.kind === "row" && dragHandle.over === h.index
-                      ? "ring-2 ring-[hsl(var(--table-select))]"
-                      : "",
-                  )}
-                  style={{
-                    top: h.top,
-                    left: h.left,
-                    width: TABLE_HANDLE_SIZE,
-                    height: TABLE_HANDLE_SIZE,
-                    transform: "translate(-50%, -50%)",
-                  }}
-                >
-                  <GripVertical className="h-3 w-3" />
-                </button>
+                    onMouseLeave={() => setHoveredHandle(null)}
+                    onDragStart={() =>
+                      setDragHandle({ kind: "row", from: h.index, over: h.index })
+                    }
+                    onDragOver={(e) => {
+                      if (dragHandle?.kind !== "row") return;
+                      e.preventDefault();
+                      if (dragHandle.over !== h.index) {
+                        setDragHandle({ ...dragHandle, over: h.index });
+                      }
+                    }}
+                    onDragEnd={commitHandleDrag}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      commitHandleDrag();
+                    }}
+                    onClick={() =>
+                      setTableHandleMenu((prev) =>
+                        prev && prev.kind === "row" && prev.index === h.index
+                          ? null
+                          : { ...h, kind: "row" },
+                      )
+                    }
+                    className={cn(
+                      "absolute z-20 flex cursor-grab items-center justify-center rounded border bg-popover text-muted-foreground shadow-sm transition-opacity active:cursor-grabbing",
+                      active ? "opacity-100" : "pointer-events-none opacity-0",
+                      dragHandle?.kind === "row" && dragHandle.over === h.index
+                        ? "ring-2 ring-[hsl(var(--table-select))]"
+                        : "",
+                    )}
+                    style={{
+                      top: h.top,
+                      left: h.left,
+                      width: TABLE_ROW_HANDLE_WIDTH,
+                      height: TABLE_HANDLE_SIZE,
+                      transform: "translate(-50%, -50%)",
+                    }}
+                  >
+                    <GripVertical className="h-3.5 w-3.5" />
+                  </button>
+                </div>
               );
             })}
 
@@ -1892,102 +2466,6 @@ export function PageEditor({
           </span>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-interface TableInsertFormProps {
-  /** Número de linhas escolhido. */
-  rows: number;
-  /** Número de colunas escolhido. */
-  cols: number;
-  /** Se a tabela começa com uma linha de cabeçalho. */
-  withHeaderRow: boolean;
-  onRowsChange: (rows: number) => void;
-  onColsChange: (cols: number) => void;
-  onHeaderRowChange: (withHeaderRow: boolean) => void;
-  /** Insere a tabela com a configuração atual. */
-  onInsert: () => void;
-}
-
-/**
- * Formulário de inserção de tabela (aba "Tabela" do popover do "+"): define
- * linhas, colunas e a linha de cabeçalho, com uma pré-visualização em grade.
- */
-function TableInsertForm({
-  rows,
-  cols,
-  withHeaderRow,
-  onRowsChange,
-  onColsChange,
-  onHeaderRowChange,
-  onInsert,
-}: TableInsertFormProps) {
-  const safeRows = Math.max(1, Math.min(20, Math.floor(rows) || 1));
-  const safeCols = Math.max(1, Math.min(12, Math.floor(cols) || 1));
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="grid grid-cols-2 gap-3">
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Linhas
-          <input
-            type="number"
-            min={1}
-            max={20}
-            value={rows}
-            onChange={(e) => onRowsChange(Number(e.currentTarget.value) || 1)}
-            className="h-[30px] w-full rounded-md border bg-background px-2 text-sm text-foreground outline-none"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-xs text-muted-foreground">
-          Colunas
-          <input
-            type="number"
-            min={1}
-            max={12}
-            value={cols}
-            onChange={(e) => onColsChange(Number(e.currentTarget.value) || 1)}
-            className="h-[30px] w-full rounded-md border bg-background px-2 text-sm text-foreground outline-none"
-          />
-        </label>
-      </div>
-
-      <label className="flex cursor-pointer items-center gap-2 text-sm">
-        <input
-          type="checkbox"
-          checked={withHeaderRow}
-          onChange={(e) => onHeaderRowChange(e.currentTarget.checked)}
-          className="cursor-pointer"
-        />
-        Incluir linha de cabeçalho
-      </label>
-
-      {/* Pré-visualização em grade do tamanho escolhido. */}
-      <div className="max-h-40 overflow-auto rounded-md border p-2">
-        <div
-          className="grid gap-0.5"
-          style={{ gridTemplateColumns: `repeat(${safeCols}, minmax(0, 1fr))` }}
-        >
-          {Array.from({ length: safeRows * safeCols }).map((_, i) => {
-            const isHeader = withHeaderRow && Math.floor(i / safeCols) === 0;
-            return (
-              <span
-                key={i}
-                className={cn(
-                  "h-5 rounded-sm border",
-                  isHeader ? "bg-primary/15" : "bg-background",
-                )}
-              />
-            );
-          })}
-        </div>
-      </div>
-
-      <Button size="sm" onClick={onInsert}>
-        <Table2 className="h-4 w-4" />
-        Inserir tabela
-      </Button>
     </div>
   );
 }

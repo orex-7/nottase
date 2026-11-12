@@ -35,7 +35,7 @@
        escuro, mas evita variáveis indefinidas caso o `dark` seja removido). */
     --sidebar: 240 4.5% 96%;
     --faint-foreground: 240 3.8% 46.1%;
-    --selection: 348.8 40% 95%;
+    --selection: 0 0% 90%; /* Seleção neutra (sem vermelho) */
     --success: 151.3 49.8% 40%;
     --warning: 37.1 70.8% 45%;
   }
@@ -66,8 +66,8 @@
     /* Hover/fundo de itens interativos: NEUTRO (grafite), sem vermelho. */
     --accent: 240 4.2% 13.9%; /* Neutro #222225 */
     --accent-foreground: 240 4% 95.1%;
-    /* Seleção: itens ATIVOS com fundo vermelho bem sutil. */
-    --selection: 348.8 20% 15.7%; /* Seleção #302023 */
+    /* Seleção: itens ATIVOS com fundo NEUTRO (grafite), sem vermelho. */
+    --selection: 240 5% 18%; /* Seleção neutra #2C2C30 */
     --destructive: 358 50% 52%; /* Vermelho (erros) #C2474B */
     --destructive-foreground: 0 0% 100%;
     /* Estados do sistema. */
@@ -127,6 +127,17 @@
   .scrollbar-stable {
     scrollbar-gutter: stable;
   }
+
+  /* Região arrastável da janela no app desktop (Electron). `-webkit-app-region`
+     é ignorado no navegador, então as classes são inertes fora do desktop. A
+     área com `drag` move a janela; elementos interativos dentro dela precisam de
+     `no-drag` para continuar clicáveis. */
+  .app-drag {
+    -webkit-app-region: drag;
+  }
+  .app-no-drag {
+    -webkit-app-region: no-drag;
+  }
 }
 
 /* ------------------------------------------------------------------------- */
@@ -143,6 +154,10 @@
      mantém a margem simétrica, com o conteúdo afastado das duas bordas. */
   padding-left: 2.25rem;
   padding-right: 2.25rem;
+  /* Espaço livre no fim da página (~10% da altura da tela) para que o último
+     bloco não fique colado na borda inferior, facilitando continuar
+     escrevendo. */
+  padding-bottom: 10vh;
 }
 .tiptap-content:focus {
   outline: none;
@@ -198,10 +213,82 @@
   border-radius: 0.375rem;
   padding: 0.6rem 0.75rem;
   overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.95em;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 2;
+  /* Altura mínima para que o bloco VAZIO (recém-inserido) não fique baixo
+     demais; equivale a ~3 linhas. */
+  min-height: 5rem;
 }
 .tiptap-content pre code {
   background: none;
   padding: 0;
+}
+
+/* Coloração de sintaxe do bloco de código (lowlight/highlight.js). As classes
+   `hljs-*` são geradas em runtime; escopamos ao conteúdo do editor (tema
+   escuro do app) para não vazar para o resto da interface. */
+.tiptap-content pre code.hljs {
+  color: hsl(var(--foreground));
+}
+.tiptap-content pre code .hljs-comment,
+.tiptap-content pre code .hljs-quote {
+  color: hsl(var(--faint-foreground));
+  font-style: italic;
+}
+.tiptap-content pre code .hljs-keyword,
+.tiptap-content pre code .hljs-selector-tag,
+.tiptap-content pre code .hljs-literal,
+.tiptap-content pre code .hljs-name,
+.tiptap-content pre code .hljs-doctag,
+.tiptap-content pre code .hljs-built_in {
+  color: hsl(190 80% 65%);
+}
+.tiptap-content pre code .hljs-string,
+.tiptap-content pre code .hljs-attr,
+.tiptap-content pre code .hljs-template-tag,
+.tiptap-content pre code .hljs-template-variable,
+.tiptap-content pre code .hljs-addition {
+  color: hsl(95 45% 62%);
+}
+.tiptap-content pre code .hljs-number,
+.tiptap-content pre code .hljs-symbol,
+.tiptap-content pre code .hljs-bullet,
+.tiptap-content pre code .hljs-regexp,
+.tiptap-content pre code .hljs-link {
+  color: hsl(28 80% 65%);
+}
+.tiptap-content pre code .hljs-title,
+.tiptap-content pre code .hljs-title.class_,
+.tiptap-content pre code .hljs-title.function_,
+.tiptap-content pre code .hljs-section {
+  color: hsl(220 85% 72%);
+}
+.tiptap-content pre code .hljs-variable,
+.tiptap-content pre code .hljs-type,
+.tiptap-content pre code .hljs-selector-class,
+.tiptap-content pre code .hljs-selector-id,
+.tiptap-content pre code .hljs-selector-attr,
+.tiptap-content pre code .hljs-selector-pseudo,
+.tiptap-content pre code .hljs-property {
+  color: hsl(0 60% 70%);
+}
+.tiptap-content pre code .hljs-meta,
+.tiptap-content pre code .hljs-meta .hljs-keyword,
+.tiptap-content pre code .hljs-operator,
+.tiptap-content pre code .hljs-punctuation {
+  color: hsl(var(--muted-foreground));
+}
+.tiptap-content pre code .hljs-deletion {
+  color: hsl(var(--destructive));
+}
+.tiptap-content pre code .hljs-emphasis {
+  font-style: italic;
+}
+.tiptap-content pre code .hljs-strong {
+  font-weight: 700;
 }
 .tiptap-content a {
   color: hsl(var(--primary));
@@ -381,34 +468,30 @@
 .tiptap-content table th > p {
   margin: 0;
 }
-/* Célula selecionada (ex.: via seleção de célula ou teclado). O ProseMirror    */
-/* aplica a classe `selectedCell` a cada célula da seleção — funciona tanto     */
-/* para 1 célula quanto para várias. Recebe um leve fundo azul E um anel azul.  */
-.tiptap-content table .selectedCell::after {
+/* Contorno da célula ativa (seleção de célula E cursor por clique simples).
+   Desenhado por um `::after` com `inset: -1px` + `border: 2px`, que é pintado
+   POR CIMA da linha (borda) da célula nos QUATRO lados — a `border`/`outline`
+   ou o `box-shadow` inset ficariam atrás/por dentro da linha. */
+.tiptap-content table .selectedCell::after,
+.tiptap-content table td.table-cursor-cell::after,
+.tiptap-content table th.table-cursor-cell::after {
   content: "";
   position: absolute;
-  inset: 0;
-  background: hsl(var(--table-select) / 0.12);
+  inset: -1px;
+  border: 2px solid hsl(var(--table-select));
   pointer-events: none;
   z-index: 2;
 }
-/* Célula com a seleção ativa: um anel azul. Usamos `box-shadow` inset (em vez  */
-/* de `border`/`outline`) porque ele é pintado POR CIMA do fundo da célula e    */
-/* não é recortado pelo `border-collapse` da tabela, garantindo que o contorno  */
-/* apareça em todos os lados.                                                    */
-.tiptap-content table .selectedCell {
-  position: relative;
-  z-index: 3;
-  box-shadow: inset 0 0 0 2px hsl(var(--table-select));
+/* Célula selecionada (ex.: via seleção de célula ou teclado): além do contorno,
+   recebe um leve fundo vermelho translúcido. */
+.tiptap-content table .selectedCell::after {
+  background: hsl(var(--table-select) / 0.12);
 }
-/* Célula onde o cursor está (clique simples). A classe é aplicada por uma      */
-/* decoração do ProseMirror (extensão `TableCellCursorHighlight`), pois a Table  */
-/* só marca as células com `selectedCell` durante uma seleção de célula.        */
+.tiptap-content table .selectedCell,
 .tiptap-content table td.table-cursor-cell,
 .tiptap-content table th.table-cursor-cell {
   position: relative;
   z-index: 3;
-  box-shadow: inset 0 0 0 2px hsl(var(--table-select));
 }
 /* Células com cor de fundo custom (atributo `background`, aplicado inline).    */
 /* O texto mantém a cor de primeiro plano do tema para garantir legibilidade    */
@@ -497,10 +580,17 @@
 /* Firefox. A utility `.no-scrollbar` continua escondendo totalmente a barra   */
 /* onde for usada.                                                             */
 /* ------------------------------------------------------------------------- */
-* {
-  /* Firefox: barra fina, com alça/trilha translúcidas. */
-  scrollbar-width: thin;
-  scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+/* IMPORTANTE: as propriedades padrão `scrollbar-width`/`scrollbar-color`      */
+/* fazem o Chrome/Edge passarem a usar a barra NATIVA (com setas) e IGNORAR    */
+/* todos os pseudo-elementos `::-webkit-scrollbar*` abaixo. Por isso elas ficam */
+/* restritas ao Firefox (via `@-moz-document`), e o Chromium estiliza a barra   */
+/* pelos pseudo-elementos WebKit, onde as setas podem ser escondidas.          */
+@-moz-document url-prefix() {
+  * {
+    /* Firefox: barra fina, com alça/trilha translúcidas. */
+    scrollbar-width: thin;
+    scrollbar-color: hsl(var(--muted-foreground) / 0.3) transparent;
+  }
 }
 ::-webkit-scrollbar {
   width: 10px;
@@ -513,33 +603,34 @@
 ::-webkit-scrollbar-corner {
   background: transparent;
 }
-/* Sem as "setas" (botões de incremento/decremento) nas barras de rolagem. */
-::-webkit-scrollbar-button {
-  display: none;
-  width: 0;
-  height: 0;
+/* Sem as "setas" (botões de incremento/decremento) nas barras de rolagem.    */
+/* Cobre os 4 pseudo-elementos de botão para que nenhum navegador renderize    */
+/* as setas (inclusive o botão duplo com as duas setas).                       */
+::-webkit-scrollbar-button,
+::-webkit-scrollbar-button:single-button,
+::-webkit-scrollbar-button:double-button,
+::-webkit-scrollbar-button:start,
+::-webkit-scrollbar-button:end,
+::-webkit-scrollbar-button:vertical:decrement,
+::-webkit-scrollbar-button:vertical:increment,
+::-webkit-scrollbar-button:horizontal:decrement,
+::-webkit-scrollbar-button:horizontal:increment {
+  display: none !important;
+  width: 0 !important;
+  height: 0 !important;
+  background: transparent;
+  border: 0;
 }
 ::-webkit-scrollbar-thumb {
   /* Borda transparente + `content-box`: a alça fica mais fina que a barra, com */
   /* um respiro entre ela e a trilha (visual "slim").                          */
-  background: hsl(var(--muted-foreground) / 0.3);
+  background: hsl(var(--muted-foreground) / 0.4);
   border: 2px solid transparent;
   background-clip: content-box;
   border-radius: 9999px;
-  transition: background-color 0.18s ease;
 }
-/* Realce discreto enquanto o mouse está sobre a área rolável (overlay). */
-:hover::-webkit-scrollbar-thumb {
-  background: hsl(var(--muted-foreground) / 0.5);
-}
-/* Alça sob o cursor. */
-::-webkit-scrollbar-thumb:hover {
-  background: hsl(var(--muted-foreground) / 0.65);
-}
-/* Alça sendo arrastada. */
-::-webkit-scrollbar-thumb:active {
-  background: hsl(var(--muted-foreground) / 0.8);
-}
+/* A alça é totalmente estática: sem mudança de tamanho ou cor em hover, foco   */
+/* ou arraste (nenhum estado altera a aparência da barra de rolagem).          */
 
 /* ------------------------------------------------------------------------- */
 /* Hover discreto nos itens de popover: dentro de um painel com `bg-popover`,

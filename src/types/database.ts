@@ -138,6 +138,11 @@ export interface SelectOption {
    * opções de `select`/`multi_select` (e tratada como "todo" como fallback).
    */
   category?: StatusCategory;
+  /**
+   * Quando `true`, o grupo desta opção fica oculto na Tabela agrupada (a opção
+   * continua válida na célula; some apenas como grupo). Estilo Notion.
+   */
+  hidden?: boolean;
 }
 
 /** Valor de célula: texto, número ou lista (multi-select). */

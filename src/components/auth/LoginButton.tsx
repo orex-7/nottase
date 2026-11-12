@@ -41,7 +41,7 @@ export function LoginButton({ redirectTo = "/" }: LoginButtonProps) {
         size="lg"
         onClick={handleLogin}
         disabled={loading}
-        className="w-full"
+        className="w-full gap-2 shadow-sm"
       >
         {loading ? (
           <Loader2 className="animate-spin" />

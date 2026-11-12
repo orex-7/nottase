@@ -65,6 +65,8 @@ import {
   Maximize2,
   MessageSquare,
   Package,
+  PanelLeftClose,
+  PanelLeftOpen,
   Percent,
   Pencil,
   Plane,
@@ -114,7 +116,10 @@ import {
 } from "@/components/ui/dialog";
 import type { NewDatabaseInput } from "@/components/database/DatabasesScreen";
 import type { NewProjectInput } from "@/components/database/ProjectsScreen";
-import { ProjectsSidebar } from "@/components/database/ProjectsSidebar";
+import {
+  ProjectsSidebar,
+  PROJECTS_SIDEBAR_COLLAPSED_KEY,
+} from "@/components/database/ProjectsSidebar";
 import { WorkspaceEmptyState } from "@/components/database/WorkspaceEmptyState";
 import { PageEditor } from "@/components/database/PageEditor";
 import { RowPageContent } from "@/components/database/RowPageContent";
@@ -131,8 +136,8 @@ import { markOptionDrag, moveOption, OPTION_DROP_BAR } from "@/components/databa
 import {
   ACTIONS_COLUMN_WIDTH,
   applyVisibleColumnOrder,
-  CALC_FUNCTIONS,
   calcFunctionLabel,
+  calcFunctionsForColumn,
   cellAreaClick,
   cellOf,
   COLUMN_TYPES,
@@ -145,6 +150,7 @@ import {
   defaultKanbanColumnId,
   editableOptionsForColumn,
   formatShortDate,
+  GROUP_ROWS_PAGE_SIZE,
   kanbanGroupColumns,
   linkHref,
   MAX_COLUMN_WIDTH,
@@ -161,10 +167,16 @@ import {
   rowTitleOf,
   STATUS_CATEGORIES,
   STATUS_OPTIONS,
+  TABLE_GROUP_HEADER_HEIGHT,
+  tableGroupColumns,
+  tableGroupKeyForRow,
+  tableGroupSeedValue,
+  tableGroupsForColumn,
   TAG_OPTIONS,
   tagById,
   titleColumnOf,
 } from "@/components/database/database-fields";
+import type { TableGroup } from "@/components/database/database-fields";
 import {
   RECURRENCE_ENDS,
   RECURRENCE_FREQUENCIES,
@@ -229,6 +241,7 @@ import {
 } from "@/components/database/database-views";
 import {
   useCalendarStore,
+  type AppView,
   type DatabaseFocusRequest,
 } from "@/store/useCalendarStore";
 import type { WorkspaceSearchResult } from "@/components/database/workspace-search";
@@ -293,6 +306,7 @@ import type {
   CellValue,
   Column,
   ColumnType,
+  CalcFunction,
   Database as DatabaseModel,
   DbRow,
   NumberFormat,
@@ -489,8 +503,11 @@ function gapPositionBetween(prev: DbRow | null, next: DbRow | null): number | nu
  * contagens com separador de milhar, porcentagens com "%" e as demais funções
  * conforme o formato da própria coluna. `null`/vazio → "—".
  */
-function formatCalcValue(value: CellValue | null, column: Column): string {
-  const fn = column.calculate;
+function formatCalcValue(
+  value: CellValue | null,
+  fn: CalcFunction | undefined,
+  column: Column,
+): string {
   if (!fn || value === null || value === "") return "—";
   const n = parseNumberValue(value);
   if (n === null) return "—";
@@ -1161,9 +1178,29 @@ function DatabaseTable({
     loadPageLayout(viewId),
   );
   /** Visualizações criadas pelo usuário sobre este database (tabela/kanban). */
-  const [views, setViews] = useState<DbView[]>(
-    () => loadPersistedViews(viewId)?.views ?? initialViews(columns),
-  );
+  const [views, setViews] = useState<DbView[]>(() => {
+    const base = loadPersistedViews(viewId)?.views ?? initialViews(columns);
+    // Migração: o "Calcular" saiu da coluna (compartilhado entre visões) para a
+    // própria visão. Semeia cada visão sem `calc` com o valor legado da coluna.
+    const legacy = columns.filter((c) => c.calculate);
+    if (legacy.length === 0) return base;
+    return base.map((v) => {
+      if (v.calc) return v;
+      const calc: Record<string, CalcFunction> = {};
+      for (const c of legacy) if (c.calculate) calc[c.id] = c.calculate;
+      return { ...v, calc };
+    });
+  });
+  /**
+   * Migração única: remove o `calculate` legado das colunas (o "Calcular" agora
+   * é por visão). Depois de migrado, a coluna não guarda mais essa config.
+   */
+  useEffect(() => {
+    if (!columns.some((c) => c.calculate)) return;
+    setColumns((prev) =>
+      prev.map((c) => (c.calculate ? { ...c, calculate: undefined } : c)),
+    );
+  }, [columns, setColumns]);
   /** Id da visualização ativa (aba selecionada). */
   const [activeViewId, setActiveViewId] = useState<string>(
     () => loadPersistedViews(viewId)?.activeViewId ?? views[0].id,
@@ -1619,7 +1656,7 @@ function DatabaseTable({
 
   /** Linhas completas, carregadas sob demanda para Kanban/Gráfico (a Tabela é
    *  paginada por cursor). */
-  const { rows: allRows } = useAllDatabaseRows(
+  const { rows: allRows, patchRows: patchAllRows } = useAllDatabaseRows(
     databaseId,
     (views.find((v) => v.id === activeViewId) ?? views[0])?.type !== "table",
   );
@@ -1760,19 +1797,129 @@ function DatabaseTable({
   );
 
   // --- Calcular (agregado no rodapé da coluna) ----------------------------
-  /** Colunas numéricas com uma função de cálculo configurada. */
-  const calcColumns = useMemo(
-    () => columns.filter((c) => c.type === "number" && c.calculate),
-    [columns],
+  /**
+   * Mapa de agregações da **visão ativa** (por id de coluna). É independente
+   * por visão: cada aba pode ter seu próprio "Calcular".
+   */
+  const activeCalc = useMemo(
+    () => (views.find((v) => v.id === activeViewId) ?? views[0])?.calc ?? {},
+    [views, activeViewId],
   );
-  /** Uma requisição por coluna calculada (o rodapé é uma linha por coluna). */
+
+  /**
+   * Agrupamento das linhas da **visão Tabela ativa** (por id de coluna). É
+   * independente por visão (igual ao "Calcular"). `null` = sem agrupamento.
+   */
+  const activeGroupColumnId = useMemo(
+    () =>
+      (views.find((v) => v.id === activeViewId) ?? views[0])?.groupColumnId ??
+      null,
+    [views, activeViewId],
+  );
+  /** Coluna de agrupamento ativa, se ela ainda existir e for agrupável. */
+  const activeGroupColumn = useMemo(() => {
+    if (!activeGroupColumnId) return null;
+    return tableGroupColumns(columns).find((c) => c.id === activeGroupColumnId) ?? null;
+  }, [activeGroupColumnId, columns]);
+  /** Define (ou limpa) a coluna de agrupamento na visão ativa. */
+  const setActiveGroupColumn = useCallback(
+    (columnId: string | null) => {
+      // Trocar de coluna zera a ordem/ocultos (as chaves eram da coluna antiga).
+      setViews((prev) =>
+        prev.map((v) =>
+          v.id === activeViewId
+            ? {
+                ...v,
+                groupColumnId: columnId,
+                groupOrder: undefined,
+                groupHidden: undefined,
+              }
+            : v,
+        ),
+      );
+    },
+    [activeViewId],
+  );
+  /** Ordem e grupos ocultos da visão ativa (por chave de grupo). */
+  const activeGroupOrder = useMemo(
+    () =>
+      (views.find((v) => v.id === activeViewId) ?? views[0])?.groupOrder ?? [],
+    [views, activeViewId],
+  );
+  const activeGroupHidden = useMemo(
+    () =>
+      (views.find((v) => v.id === activeViewId) ?? views[0])?.groupHidden ?? [],
+    [views, activeViewId],
+  );
+  /** Persiste apenas a ordem dos grupos na visão ativa. */
+  const setActiveGroupOrder = useCallback(
+    (order: string[]) => {
+      setViews((prev) =>
+        prev.map((v) =>
+          v.id === activeViewId ? { ...v, groupOrder: order } : v,
+        ),
+      );
+    },
+    [activeViewId],
+  );
+  /** Persiste apenas os grupos ocultos na visão ativa. */
+  const setActiveGroupHidden = useCallback(
+    (hidden: string[]) => {
+      setViews((prev) =>
+        prev.map((v) =>
+          v.id === activeViewId ? { ...v, groupHidden: hidden } : v,
+        ),
+      );
+    },
+    [activeViewId],
+  );
+  /**
+   * Quantas linhas de cada grupo estão visíveis (paginação por grupo, estilo
+   * Notion). Chave = chave do grupo; ausente = `GROUP_ROWS_PAGE_SIZE`.
+   */
+  const [groupVisibleCount, setGroupVisibleCount] = useState<
+    Record<string, number>
+  >({});
+  // Reinicia a paginação por grupo ao trocar de coluna de agrupamento.
+  useEffect(() => {
+    setGroupVisibleCount({});
+  }, [activeGroupColumnId]);
+  /**
+   * Grupos da coluna de agrupamento ativa, já na ordem persistida (grupos novos
+   * vão para o fim) e marcados como ocultos quando aplicável.
+   */
+  const activeTableGroups = useMemo(() => {
+    if (!activeGroupColumn) return [];
+    const natural = tableGroupsForColumn(activeGroupColumn);
+    const byKey = new Map(natural.map((g) => [g.key, g]));
+    const hiddenSet = new Set(activeGroupHidden);
+    const ordered: TableGroup[] = [];
+    for (const key of activeGroupOrder) {
+      const g = byKey.get(key);
+      if (g) {
+        ordered.push(g);
+        byKey.delete(key);
+      }
+    }
+    // Grupos que não estavam na ordem persistida (novos) vão para o fim.
+    for (const g of natural) if (byKey.has(g.key)) ordered.push(g);
+    return ordered.map((g) => ({
+      ...g,
+      hidden: hiddenSet.has(g.key) || g.hidden,
+    }));
+  }, [activeGroupColumn, activeGroupOrder, activeGroupHidden]);
+  /**
+   * Uma requisição por coluna calculada (o rodapé é uma linha por coluna).
+   * Vale para qualquer tipo de coluna (numéricas e contagens/porcentagens).
+   */
   const calcConfigs = useMemo<ColumnAggregateRequest[]>(() => {
     const out: ColumnAggregateRequest[] = [];
-    for (const column of calcColumns) {
-      if (column.calculate) out.push({ columnId: column.id, fn: column.calculate });
+    for (const column of columns) {
+      const fn = activeCalc[column.id];
+      if (fn) out.push({ columnId: column.id, fn });
     }
     return out;
-  }, [calcColumns]);
+  }, [columns, activeCalc]);
 
   const { getValue: getColumnAggregate } = useColumnAggregates({
     databaseId,
@@ -1857,9 +2004,87 @@ function DatabaseTable({
 
   // --- Virtualização das linhas da tabela --------------------------------
   /**
-   * Índices das linhas que precisam ficar sempre montadas durante a
-   * virtualização: a que está sendo arrastada, a linha-alvo do drop, a com
-   * menu de célula aberto e a com célula em edição (foco).
+   * Itens exibidos na área virtualizada do `<tbody>`: cada linha da tabela e,
+   * quando há agrupamento ativo, um cabeçalho de grupo antes do primeiro item
+   * de cada grupo. Sem agrupamento equivale a uma linha por `tableRows`.
+   */
+  const tableVirtualItems = useMemo<
+    (
+      | { kind: "header"; key: string; group: TableGroup; count: number }
+      | { kind: "row"; key: string; rowIndex: number }
+      | { kind: "groupLoadMore"; key: string; group: TableGroup; remaining: number }
+      | { kind: "groupFooter"; key: string; group: TableGroup; afterRowId: string | null }
+    )[]
+  >(() => {
+    if (!activeGroupColumn) {
+      return tableRows.map((r, index) => ({
+        kind: "row" as const,
+        key: r.id,
+        rowIndex: index,
+      }));
+    }
+    const buckets = new Map<string, number[]>();
+    tableRows.forEach((r, index) => {
+      const key = tableGroupKeyForRow(activeGroupColumn, r.values);
+      const list = buckets.get(key);
+      if (list) list.push(index);
+      else buckets.set(key, [index]);
+    });
+    const items: (
+      | { kind: "header"; key: string; group: TableGroup; count: number }
+      | { kind: "row"; key: string; rowIndex: number }
+      | { kind: "groupLoadMore"; key: string; group: TableGroup; remaining: number }
+      | { kind: "groupFooter"; key: string; group: TableGroup; afterRowId: string | null }
+    )[] = [];
+    for (const group of activeTableGroups) {
+      if (group.hidden) continue;
+      const indexes = buckets.get(group.key);
+      if (!indexes || indexes.length === 0) continue;
+      items.push({
+        kind: "header",
+        key: `__hdr_${group.key}`,
+        group,
+        count: indexes.length,
+      });
+      // Paginação por grupo: mostra no máximo `GROUP_ROWS_PAGE_SIZE` linhas.
+      const visible = groupVisibleCount[group.key] ?? GROUP_ROWS_PAGE_SIZE;
+      const shown = indexes.slice(0, visible);
+      for (const rowIndex of shown) {
+        items.push({
+          kind: "row",
+          key: tableRows[rowIndex].id,
+          rowIndex,
+        });
+      }
+      const remaining = indexes.length - shown.length;
+      if (remaining > 0) {
+        items.push({
+          kind: "groupLoadMore",
+          key: `__more_${group.key}`,
+          group,
+          remaining,
+        });
+      }
+      // Botão "Nova linha" ao fim do grupo (cria a linha já com o valor do grupo).
+      items.push({
+        kind: "groupFooter",
+        key: `__add_${group.key}`,
+        group,
+        afterRowId: tableRows[indexes[indexes.length - 1]].id,
+      });
+    }
+    return items;
+  }, [
+    tableRows,
+    activeGroupColumn,
+    activeTableGroups,
+    groupVisibleCount,
+  ]);
+
+  /**
+   * Índices (no array `tableVirtualItems`) das linhas que precisam ficar sempre
+   * montadas durante a virtualização: a que está sendo arrastada, a linha-alvo
+   * do drop, a com menu de célula aberto e a com célula em edição (foco).
    */
   const pinnedRowIndexes = useMemo(() => {
     const ids = new Set<string>();
@@ -1868,16 +2093,35 @@ function DatabaseTable({
     if (openCell) ids.add(openCell.split(":")[0]);
     if (activeRowId) ids.add(activeRowId);
     const indexes: number[] = [];
-    tableRows.forEach((r, index) => {
-      if (ids.has(r.id)) indexes.push(index);
+    tableVirtualItems.forEach((item, index) => {
+      if (item.kind === "row" && ids.has(item.key)) indexes.push(index);
     });
     return indexes;
-  }, [draggingRowId, rowDropBeforeId, openCell, activeRowId, tableRows]);
+  }, [draggingRowId, rowDropBeforeId, openCell, activeRowId, tableVirtualItems]);
 
-  /** Id estável de uma linha pelo índice (chave do virtualizador). */
+  /** Id estável de um item pelo índice (chave do virtualizador). */
   const getRowIdByIndex = useCallback(
-    (index: number) => tableRows[index]?.id ?? `__loading_${index}__`,
-    [tableRows],
+    (index: number) =>
+      tableVirtualItems[index]?.key ?? `__loading_${index}__`,
+    [tableVirtualItems],
+  );
+
+  /** Índice (virtual) de cada linha pelo seu id — para `scrollToIndex`. */
+  const tableRowVirtualIndex = useMemo(() => {
+    const map = new Map<string, number>();
+    tableVirtualItems.forEach((item, index) => {
+      if (item.kind === "row") map.set(item.key, index);
+    });
+    return map;
+  }, [tableVirtualItems]);
+
+  /** Altura estimada de um item: cabeçalho de grupo é um pouco mais baixa. */
+  const estimatedItemSize = useCallback(
+    (index: number) =>
+      tableVirtualItems[index]?.kind === "header"
+        ? TABLE_GROUP_HEADER_HEIGHT
+        : rowHeight,
+    [tableVirtualItems, rowHeight],
   );
 
   const {
@@ -1887,10 +2131,10 @@ function DatabaseTable({
     paddingBottom: rowsPaddingBottom,
   } = useVirtualTableRows({
     // +1 item no fim: a linha "carregando" quando ainda há páginas.
-    count: tableRows.length + (tableRowsHasMore ? 1 : 0),
+    count: tableVirtualItems.length + (tableRowsHasMore ? 1 : 0),
     scrollRef: tableScrollRef,
     getRowId: getRowIdByIndex,
-    estimateSize: rowHeight,
+    estimateSize: estimatedItemSize,
     pinnedIndexes: pinnedRowIndexes,
     overscan: 10,
     scrollMargin: tableHeadHeight,
@@ -2132,6 +2376,13 @@ function DatabaseTable({
         r.id === rowId ? { ...r, values: { ...r.values, [columnId]: value } } : r,
       ),
     );
+    // As visões Kanban/Gráfico usam `allRows` (conjunto completo), não a lista
+    // paginada da Tabela: patcheia também para refletir a edição sem reload.
+    patchAllRows((prevRows) =>
+      prevRows.map((r) =>
+        r.id === rowId ? { ...r, values: { ...r.values, [columnId]: value } } : r,
+      ),
+    );
     // Título mudou: os chips de relação que apontam para esta linha ficam stale.
     if (titleColumnOf(columns)?.id === columnId) invalidateRelatedRows([rowId]);
     // Se a coluna for alvo de rollup em alguma tabela, os rollups que a agregam
@@ -2150,6 +2401,11 @@ function DatabaseTable({
       () => {
         if (!previous) return;
         patchTableRows((prevRows) =>
+          prevRows.map((r) =>
+            r.id === rowId ? { ...r, values: previous } : r,
+          ),
+        );
+        patchAllRows((prevRows) =>
           prevRows.map((r) =>
             r.id === rowId ? { ...r, values: previous } : r,
           ),
@@ -2310,6 +2566,15 @@ function DatabaseTable({
     const targetIndex = beforeRowId ? ordered.indexOf(beforeRowId) : -1;
     const insertAt = targetIndex === -1 ? ordered.length : targetIndex;
     ordered.splice(insertAt, 0, rowId);
+    // Reordena `allRows` (fonte do Kanban) para a nova posição valer sem reload.
+    const orderMap = new Map(ordered.map((id, index) => [id, index]));
+    patchAllRows((prev) =>
+      [...prev].sort(
+        (a, b) =>
+          (orderMap.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (orderMap.get(b.id) ?? Number.MAX_SAFE_INTEGER),
+      ),
+    );
     onReorderRows(databaseId, ordered);
   }
 
@@ -2317,6 +2582,23 @@ function DatabaseTable({
   function updateColumn(id: string, patch: Partial<Column>) {
     setColumns((prev) =>
       prev.map((c) => (c.id === id ? { ...c, ...patch } : c)),
+    );
+  }
+
+  /**
+   * Define (ou limpa) a agregação do rodapé de uma coluna **na visão ativa**.
+   * Cada visão guarda o seu próprio mapa `calc`, então mudar aqui não afeta as
+   * outras abas.
+   */
+  function setColumnCalc(columnId: string, fn: CalcFunction | undefined) {
+    setViews((prev) =>
+      prev.map((v) => {
+        if (v.id !== activeViewId) return v;
+        const calc = { ...(v.calc ?? {}) };
+        if (fn) calc[columnId] = fn;
+        else delete calc[columnId];
+        return { ...v, calc };
+      }),
     );
   }
 
@@ -2438,6 +2720,16 @@ function DatabaseTable({
           nextRows.splice(at === -1 ? nextRows.length : at + 1, 0, created);
           return nextRows;
         });
+        // Kanban/Gráfico usam `allRows`: reflete a nova linha também.
+        patchAllRows((prevRows) => {
+          if (prevRows.some((r) => r.id === created.id)) return prevRows;
+          const at = afterRowId
+            ? prevRows.findIndex((r) => r.id === afterRowId)
+            : -1;
+          const nextRows = [...prevRows];
+          nextRows.splice(at === -1 ? nextRows.length : at + 1, 0, created);
+          return nextRows;
+        });
         // Nova linha: o rodapé ("Calcular") recalcula (contagens/somas).
         setDataRevision((r) => r + 1);
       }
@@ -2544,13 +2836,21 @@ function DatabaseTable({
       `tr[data-row-id="${pendingFocusRowId}"] td:nth-child(2) input`,
     );
     if (!input) {
-      const index = tableRows.findIndex((r) => r.id === pendingFocusRowId);
-      if (index >= 0) rowsVirtualizer.scrollToIndex(index, { align: "auto" });
+      const index = tableRowVirtualIndex.get(pendingFocusRowId);
+      if (index !== undefined) {
+        rowsVirtualizer.scrollToIndex(index, { align: "auto" });
+      }
       return;
     }
     input.focus();
     setPendingFocusRowId(null);
-  }, [pendingFocusRowId, tableRows, rowsVirtualizer, virtualRows]);
+  }, [
+    pendingFocusRowId,
+    tableRows,
+    rowsVirtualizer,
+    virtualRows,
+    tableRowVirtualIndex,
+  ]);
 
   // Carrega a próxima página quando o último item virtual se aproxima do fim
   // (~15 linhas). O hook garante uma requisição por vez.
@@ -2558,10 +2858,10 @@ function DatabaseTable({
     if (!tableRowsHasMore || tableRowsLoadingMore) return;
     const last = virtualRows[virtualRows.length - 1];
     if (!last) return;
-    if (last.index >= tableRows.length - 15) fetchNextRowsPage();
+    if (last.index >= tableVirtualItems.length - 15) fetchNextRowsPage();
   }, [
     virtualRows,
-    tableRows.length,
+    tableVirtualItems.length,
     tableRowsHasMore,
     tableRowsLoadingMore,
     fetchNextRowsPage,
@@ -2593,9 +2893,10 @@ function DatabaseTable({
   }, [activeRowId]);
 
   function removeRow(id: string) {
-    const removed = tableRows.find((r) => r.id === id);
+    const removed = tableRows.find((r) => r.id === id) ?? allRows.find((r) => r.id === id);
     if (!removed) return;
     patchTableRows((prevRows) => prevRows.filter((r) => r.id !== id));
+    patchAllRows((prevRows) => prevRows.filter((r) => r.id !== id));
     // Referências a esta linha passam a exibir "linha removida".
     invalidateRelatedRows([id]);
     // Linha removida: o rodapé ("Calcular") recalcula.
@@ -2603,6 +2904,9 @@ function DatabaseTable({
     // Em erro, reinsere a linha na lista carregada (o wrapper não tem a lista).
     void Promise.resolve(onDeleteRow(databaseId, id, removed)).catch(() => {
       patchTableRows((prevRows) =>
+        prevRows.some((r) => r.id === id) ? prevRows : [...prevRows, removed],
+      );
+      patchAllRows((prevRows) =>
         prevRows.some((r) => r.id === id) ? prevRows : [...prevRows, removed],
       );
       // Revertida a exclusão, o rodapé volta ao valor do servidor.
@@ -4860,6 +5164,8 @@ function DatabaseTable({
                 </th>
                 {orderedVisibleColumns.map((column) => {
                   const Icon = columnIcon(column);
+                  /** Agregação do rodapé desta coluna **na visão ativa**. */
+                  const currentCalc = activeCalc[column.id];
                   return (
                     <ColumnHeaderCell
                       key={column.id}
@@ -5362,10 +5668,15 @@ function DatabaseTable({
                                   ) : null}
                                 </div>
 
-                                <div className="relative">
-                                  <button
-                                    type="button"
-                                    data-calc-menu-trigger
+
+                              </div>
+                            ) : null}
+
+                            <div className="my-1 h-px bg-border" />
+                            <div className="relative">
+                              <button
+                                type="button"
+                                data-calc-menu-trigger
                                     onClick={() => {
                                       setOpenCalcMenu(
                                         openCalcMenu === column.id
@@ -5381,8 +5692,8 @@ function DatabaseTable({
                                   >
                                     Calcular
                                     <span className="ml-auto truncate text-[11px] text-muted-foreground">
-                                      {column.calculate
-                                        ? calcFunctionLabel(column.calculate)
+                                      {currentCalc
+                                        ? calcFunctionLabel(currentCalc)
                                         : "Nenhum"}
                                     </span>
                                     <ChevronDown className="h-3.5 w-3.5" />
@@ -5400,19 +5711,17 @@ function DatabaseTable({
                                       <button
                                         type="button"
                                         onClick={() => {
-                                          updateColumn(column.id, {
-                                            calculate: undefined,
-                                          });
+                                          setColumnCalc(column.id, undefined);
                                           setOpenCalcMenu(null);
                                         }}
                                         className={cn(
                                           "flex w-full items-center gap-2 rounded px-2 py-1.5 text-left text-sm hover:bg-accent",
-                                          !column.calculate &&
+                                          !currentCalc &&
                                             "bg-primary/10 text-primary",
                                         )}
                                       >
                                         Nenhum
-                                        {!column.calculate ? (
+                                        {!currentCalc ? (
                                           <span className="ml-auto text-[10px] uppercase">
                                             atual
                                           </span>
@@ -5421,17 +5730,18 @@ function DatabaseTable({
 
                                       <div className="my-1 h-px bg-border" />
 
-                                      {CALC_FUNCTIONS.map((option) => {
+                                      {calcFunctionsForColumn(column).map((option) => {
                                         const isCurrent =
-                                          column.calculate === option.value;
+                                          currentCalc === option.value;
                                         return (
                                           <button
                                             key={option.value}
                                             type="button"
                                             onClick={() => {
-                                              updateColumn(column.id, {
-                                                calculate: option.value,
-                                              });
+                                              setColumnCalc(
+                                                column.id,
+                                                option.value,
+                                              );
                                               setOpenCalcMenu(null);
                                             }}
                                             className={cn(
@@ -5451,10 +5761,7 @@ function DatabaseTable({
                                       })}
                                     </div>
                                   ) : null}
-                                </div>
-
-                              </div>
-                            ) : null}
+                            </div>
 
                             {openStatusOptions === column.id &&
                             column.type === "status" ? (
@@ -5583,8 +5890,8 @@ function DatabaseTable({
               ) : null}
 
               {virtualRows.map((virtualRow) => {
-                const row = tableRows[virtualRow.index];
-                if (!row) {
+                const item = tableVirtualItems[virtualRow.index];
+                if (!item) {
                   // Item extra no fim: indicador de carregamento da próxima página.
                   return (
                     <tr key={`__loading_${virtualRow.index}__`}>
@@ -5597,6 +5904,102 @@ function DatabaseTable({
                           : "Carregando…"}
                       </td>
                     </tr>
+                  );
+                }
+                if (item.kind === "header") {
+                  return (
+                    <tr
+                      key={item.key}
+                      data-group-header
+                      className="border-b bg-muted/40"
+                      style={{ height: TABLE_GROUP_HEADER_HEIGHT }}
+                    >
+                      <td
+                        colSpan={tableColumnCount}
+                        className="px-3 py-1.5 text-xs font-medium text-foreground"
+                      >
+                        <span className="inline-flex items-center gap-2">
+                          {item.group.color ? (
+                            <span
+                              className={cn(
+                                "inline-flex max-w-[16rem] items-center rounded px-1.5 py-0.5 text-xs font-medium",
+                                item.group.color,
+                              )}
+                            >
+                              <span className="truncate">
+                                {item.group.label}
+                              </span>
+                            </span>
+                          ) : (
+                            <span className="truncate text-muted-foreground">
+                              {item.group.label}
+                            </span>
+                          )}
+                          <span className="text-muted-foreground">
+                            {item.count}
+                          </span>
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                }
+                if (item.kind === "groupLoadMore") {
+                  // "Carregar mais": revela +GROUP_ROWS_PAGE_SIZE linhas do grupo.
+                  return (
+                    <tr key={item.key} data-group-load-more>
+                      <td colSpan={tableColumnCount} className="p-0">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setGroupVisibleCount((prev) => ({
+                              ...prev,
+                              [item.group.key]:
+                                (prev[item.group.key] ??
+                                  GROUP_ROWS_PAGE_SIZE) + GROUP_ROWS_PAGE_SIZE,
+                            }))
+                          }
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <ChevronDown className="h-3.5 w-3.5 flex-none" />
+                          <span>Carregar mais ({item.remaining})</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }
+                if (item.kind === "groupFooter") {
+                  // "Nova linha" ao fim do grupo: cria a linha já com o valor da
+                  // coluna de agrupamento (o grupo receptivo), estilo Notion.
+                  return (
+                    <tr key={item.key} data-group-footer>
+                      <td colSpan={tableColumnCount} className="p-0">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!activeGroupColumn) return;
+                            const seed = tableGroupSeedValue(
+                              activeGroupColumn,
+                              item.group.key,
+                            );
+                            const values =
+                              seed === null
+                                ? undefined
+                                : { [activeGroupColumn.id]: seed };
+                            void addRow(values, item.afterRowId, true);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-muted-foreground hover:bg-accent hover:text-foreground"
+                        >
+                          <Plus className="h-3.5 w-3.5 flex-none" />
+                          <span>Nova linha</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }
+                const row = tableRows[item.rowIndex];
+                if (!row) {
+                  return (
+                    <tr key={`__missing_${virtualRow.index}__`} aria-hidden />
                   );
                 }
                 return (
@@ -5716,8 +6119,12 @@ function DatabaseTable({
                 style={{ width: effectiveColumnWidth(column) }}
               >
                 <span className="block truncate whitespace-nowrap">
-                  {column.calculate
-                    ? formatCalcValue(getColumnAggregate(column.id), column)
+                  {activeCalc[column.id]
+                    ? formatCalcValue(
+                        getColumnAggregate(column.id),
+                        activeCalc[column.id],
+                        column,
+                      )
                     : ""}
                 </span>
               </div>
@@ -5947,6 +6354,17 @@ function DatabaseTable({
           const column = columns.find((c) => c.id === columnId);
           if (column) saveRollupConfig(column, config);
         }}
+        groupColumnId={activeGroupColumnId}
+        groupItems={activeTableGroups}
+        onReorderGroups={setActiveGroupOrder}
+        onToggleGroupHidden={(key) =>
+          setActiveGroupHidden(
+            activeGroupHidden.includes(key)
+              ? activeGroupHidden.filter((k) => k !== key)
+              : [...activeGroupHidden, key],
+          )
+        }
+        onChangeGroupColumn={setActiveGroupColumn}
         initialView={settingsInitialView}
         onClose={() => setIsSettingsOpen(false)}
       />
@@ -5967,14 +6385,29 @@ function DatabaseTable({
  */
 export function DatabaseView({
   userName,
+  userEmail = "",
+  userAvatar = null,
   mobileNavOpen = false,
   onCloseMobileNav,
+  isDesktop = false,
+  appView = "database",
+  onChangeAppView,
 }: {
   userName?: string;
+  /** E-mail do usuário (perfil no topo da sidebar, no desktop). */
+  userEmail?: string;
+  /** Foto do usuário (perfil no topo da sidebar, no desktop). */
+  userAvatar?: string | null;
   /** Gaveta off-canvas do celular aberta (repassada à `ProjectsSidebar`). */
   mobileNavOpen?: boolean;
   /** Fecha a gaveta do celular ao navegar (repassada à `ProjectsSidebar`). */
   onCloseMobileNav?: () => void;
+  /** No desktop a sidebar ocupa a altura toda e hospeda o alternador. */
+  isDesktop?: boolean;
+  /** Área do app ativa (para o alternador no topo da sidebar). */
+  appView?: AppView;
+  /** Troca de área do app (para o alternador no topo da sidebar). */
+  onChangeAppView?: (view: AppView) => void;
 }) {
   const [databases, setDatabases] = useState<DatabaseModel[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
@@ -5983,6 +6416,32 @@ export function DatabaseView({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Estado de minimização da sidebar de projetos (persistido em localStorage).
+   * Vive aqui, e não na `ProjectsSidebar`, porque o botão de minimizar passou a
+   * ficar na faixa de abas da barra de título (no desktop).
+   */
+  const [projectsSidebarCollapsed, setProjectsSidebarCollapsed] = useState(false);
+  // Restaura a preferência de minimização após a montagem (evita mismatch de
+  // hidratação).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setProjectsSidebarCollapsed(
+      window.localStorage.getItem(PROJECTS_SIDEBAR_COLLAPSED_KEY) === "1",
+    );
+  }, []);
+  const toggleProjectsSidebar = useCallback(() => {
+    setProjectsSidebarCollapsed((prev) => {
+      const next = !prev;
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(
+          PROJECTS_SIDEBAR_COLLAPSED_KEY,
+          next ? "1" : "0",
+        );
+      }
+      return next;
+    });
+  }, []);
   /**
    * Flag: a navegação salva entre databases abertos (chips + database ativo) já
    * foi restaurada. Enquanto `false`, o auto-open do primeiro database fica
@@ -6987,6 +7446,79 @@ export function DatabaseView({
     );
   }
 
+  /**
+   * Sidebar de projetos compartilhada pelos ramos de render (todos exibem a
+   * mesma lista). No desktop ela hospeda o alternador Calendário/Workspace.
+   */
+  const projectsSidebar = (
+    <ProjectsSidebar
+      projects={projectSummaries}
+      categories={categories}
+      databases={databases}
+      activeProjectId={resolvedProjectId}
+      onOpenProject={handleOpenProject}
+      onOpenSearchResult={handleSearchResult}
+      onCreateDatabase={handleCreateDatabase}
+      onDeleteDatabase={handleDelete}
+      onCreateProject={handleCreateProject}
+      onCreateCategory={handleCreateCategory}
+      onReorderCategories={handleReorderCategories}
+      onReorderProjects={handleReorderProjects}
+      onUpdateProject={handleUpdateProject}
+      onUpdateCategory={handleUpdateCategory}
+      onDeleteCategory={handleDeleteCategory}
+      onDeleteProject={handleDeleteProject}
+      mobileOpen={mobileNavOpen}
+      onCloseMobile={onCloseMobileNav}
+      showAppSwitcher={isDesktop}
+      appView={appView}
+      onChangeAppView={onChangeAppView}
+      userName={userName}
+      userEmail={userEmail}
+      userAvatar={userAvatar}
+      collapsed={projectsSidebarCollapsed}
+      onToggleCollapsed={toggleProjectsSidebar}
+      // No desktop o botão de minimizar vive na faixa de abas da barra de
+      // título (presente em todos os estados); o cabeçalho da sidebar o esconde
+      // para não duplicar. No celular ele permanece (fecha a gaveta).
+      hideMinimizeButton={isDesktop}
+    />
+  );
+
+  /**
+   * Faixa da barra de título do app desktop (40px): botão de minimizar/expandir
+   * a sidebar à esquerda e, quando há database aberto, as abas ao lado. Presente
+   * em todos os estados do Workspace, para o controle da sidebar nunca sumir.
+   */
+  const titleStrip = (tabs?: ReactNode) => (
+    <div className="app-drag flex h-10 flex-none items-stretch justify-start gap-1 bg-background pl-2">
+      <div className="app-no-drag flex flex-none items-center">
+        <button
+          type="button"
+          onClick={toggleProjectsSidebar}
+          aria-label={
+            projectsSidebarCollapsed
+              ? "Expandir sidebar de projetos"
+              : "Minimizar sidebar de projetos"
+          }
+          title={
+            projectsSidebarCollapsed
+              ? "Expandir sidebar de projetos"
+              : "Minimizar sidebar de projetos"
+          }
+          className="flex h-6 w-6 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+        >
+          {projectsSidebarCollapsed ? (
+            <PanelLeftOpen className="h-4 w-4" />
+          ) : (
+            <PanelLeftClose className="h-4 w-4" />
+          )}
+        </button>
+      </div>
+      {tabs}
+    </div>
+  );
+
   /*
    * Sem projeto ativo: quando há projetos, o efeito acima seleciona o primeiro e
    * a tela passa a listar os databases dele. Quando NÃO há nenhum projeto (conta
@@ -6996,35 +7528,19 @@ export function DatabaseView({
   if (!resolvedProjectId) {
     return (
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <ProjectsSidebar
-          projects={projectSummaries}
-          categories={categories}
-          databases={databases}
-          activeProjectId={resolvedProjectId}
-          onOpenProject={handleOpenProject}
-          onOpenSearchResult={handleSearchResult}
-          onCreateDatabase={handleCreateDatabase}
-          onDeleteDatabase={handleDelete}
-          onCreateProject={handleCreateProject}
-          onCreateCategory={handleCreateCategory}
-          onReorderCategories={handleReorderCategories}
-          onReorderProjects={handleReorderProjects}
-          onUpdateProject={handleUpdateProject}
-          onUpdateCategory={handleUpdateCategory}
-          onDeleteCategory={handleDeleteCategory}
-          onDeleteProject={handleDeleteProject}
-          mobileOpen={mobileNavOpen}
-          onCloseMobile={onCloseMobileNav}
-        />
-        <WorkspaceEmptyState
-          variant="no-projects"
-          userName={userName}
-          categories={categories}
-          databases={databases}
-          onCreateProject={handleCreateProject}
-          onCreateCategory={handleCreateCategory}
-          onCreateDatabase={(input) => void handleCreate(input)}
-        />
+        {projectsSidebar}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {isDesktop ? titleStrip() : null}
+          <WorkspaceEmptyState
+            variant="no-projects"
+            userName={userName}
+            categories={categories}
+            databases={databases}
+            onCreateProject={handleCreateProject}
+            onCreateCategory={handleCreateCategory}
+            onCreateDatabase={(input) => void handleCreate(input)}
+          />
+        </div>
       </div>
     );
   }
@@ -7039,115 +7555,108 @@ export function DatabaseView({
     const projectHasDatabases = projectDatabases.length > 0;
     return (
       <div className="flex min-h-0 flex-1 overflow-hidden">
-        <ProjectsSidebar
-          projects={projectSummaries}
-          categories={categories}
-          databases={databases}
-          activeProjectId={resolvedProjectId}
-          onOpenProject={handleOpenProject}
-          onOpenSearchResult={handleSearchResult}
-          onCreateDatabase={handleCreateDatabase}
-          onDeleteDatabase={handleDelete}
-          onCreateProject={handleCreateProject}
-          onCreateCategory={handleCreateCategory}
-          onReorderCategories={handleReorderCategories}
-          onReorderProjects={handleReorderProjects}
-          onUpdateProject={handleUpdateProject}
-          onUpdateCategory={handleUpdateCategory}
-          onDeleteCategory={handleDeleteCategory}
-          onDeleteProject={handleDeleteProject}
-          mobileOpen={mobileNavOpen}
-          onCloseMobile={onCloseMobileNav}
-        />
-        {projectHasDatabases ? (
-          <WorkspaceEmptyState
-            variant="no-open-database"
-            userName={userName}
-            projectName={projects.find((p) => p.id === resolvedProjectId)?.name}
-            categories={categories}
-            databases={databases}
-            projects={projects}
-            onOpenDatabase={handleOpenDatabase}
-            onCreateProject={handleCreateProject}
-            onCreateCategory={handleCreateCategory}
-            onCreateDatabase={(input) => void handleCreate(input)}
-          />
-        ) : (
-          <WorkspaceEmptyState
-            variant="no-database"
-            userName={userName}
-            projectName={projects.find((p) => p.id === resolvedProjectId)?.name}
-            categories={categories}
-            databases={databases}
-            onCreateProject={handleCreateProject}
-            onCreateCategory={handleCreateCategory}
-            onCreateDatabase={(input) => void handleCreate(input)}
-          />
-        )}
-        {errorNotice}
+        {projectsSidebar}
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+          {isDesktop ? titleStrip() : null}
+          {projectHasDatabases ? (
+            <WorkspaceEmptyState
+              variant="no-open-database"
+              userName={userName}
+              projectName={projects.find((p) => p.id === resolvedProjectId)?.name}
+              categories={categories}
+              databases={databases}
+              projects={projects}
+              onOpenDatabase={handleOpenDatabase}
+              onCreateProject={handleCreateProject}
+              onCreateCategory={handleCreateCategory}
+              onCreateDatabase={(input) => void handleCreate(input)}
+            />
+          ) : (
+            <WorkspaceEmptyState
+              variant="no-database"
+              userName={userName}
+              projectName={projects.find((p) => p.id === resolvedProjectId)?.name}
+              categories={categories}
+              databases={databases}
+              onCreateProject={handleCreateProject}
+              onCreateCategory={handleCreateCategory}
+              onCreateDatabase={(input) => void handleCreate(input)}
+            />
+          )}
+          {errorNotice}
+        </div>
       </div>
     );
   }
 
+  const openDatabaseBar = (
+    <OpenDatabaseBar
+      currentDatabaseId={selected.id}
+      databases={databases}
+      projects={projects}
+      openDatabaseIds={openDatabaseIds}
+      onSelectDatabase={handleSelectDatabaseChip}
+      onOpenDatabase={handleOpenDatabase}
+      onCloseDatabase={handleCloseDatabase}
+    />
+  );
+
   return (
     <div className="flex min-h-0 flex-1 overflow-hidden">
-      <ProjectsSidebar
-        projects={projectSummaries}
-        categories={categories}
-        databases={databases}
-        activeProjectId={resolvedProjectId}
-        onOpenProject={handleOpenProject}
-        onOpenSearchResult={handleSearchResult}
-        onCreateDatabase={handleCreateDatabase}
-        onDeleteDatabase={handleDelete}
-        onCreateProject={handleCreateProject}
-        onCreateCategory={handleCreateCategory}
-        onReorderCategories={handleReorderCategories}
-        onReorderProjects={handleReorderProjects}
-        onUpdateProject={handleUpdateProject}
-        onUpdateCategory={handleUpdateCategory}
-        onDeleteCategory={handleDeleteCategory}
-        onDeleteProject={handleDeleteProject}
-        mobileOpen={mobileNavOpen}
-        onCloseMobile={onCloseMobileNav}
-      />
-      {/* Área do conteúdo (ao lado da sidebar). É `relative` para o layout
-          "Página inteira" ancorar a página do item aqui dentro, mantendo a
-          sidebar e o cabeçalho do app visíveis. */}
+      {projectsSidebar}
+      {/* Área do conteúdo (ao lado da sidebar). O `relative` interno (abaixo da
+          faixa de abas) é o que ancora a página do item em "Página inteira",
+          mantendo a faixa de abas e a sidebar visíveis. */}
       <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
-        <OpenDatabaseBar
-          currentDatabaseId={selected.id}
-          databases={databases}
-          projects={projects}
-          openDatabaseIds={openDatabaseIds}
-          onSelectDatabase={handleSelectDatabaseChip}
-          onOpenDatabase={handleOpenDatabase}
-          onCloseDatabase={handleCloseDatabase}
-        />
-        <DatabaseTable
-          key={selected.id}
-          database={tableDatabase ?? selected}
-          viewId={selected.id}
-          linkedDatabaseId={selected.linkedDatabaseId ?? null}
-          allDatabases={databases}
-          onRename={handleRename}
-          onUpdateIcon={handleUpdateIcon}
-          onUpdateColumns={handleUpdateColumns}
-          onAddRow={handleAddRow}
-          onUpdateCell={handleUpdateCell}
-          onDeleteRow={handleDeleteRow}
-          onReorderRows={handleReorderRows}
-          onRowsReordered={handleRowsReordered}
-          onAddTemplate={handleAddTemplate}
-          onDeleteTemplate={handleDeleteTemplate}
-          onApplyTemplate={handleApplyTemplate}
-          onDeleteDatabase={handleDelete}
-          onOpenDatabase={handleOpenDatabase}
-          onError={setError}
-          onPatchDatabase={patchDatabase}
-          focusRequest={focusRequest}
-          onFocusApplied={() => setFocusRequest(null)}
-        />
+        {isDesktop ? (
+          // App desktop: as abas dos databases abertos ficam na faixa da barra
+          // de título (40px), à direita do botão de minimizar a sidebar.
+          titleStrip(
+            <div className="app-no-drag flex min-w-0 items-stretch">
+              <OpenDatabaseBar
+                variant="titlebar"
+                currentDatabaseId={selected.id}
+                databases={databases}
+                projects={projects}
+                openDatabaseIds={openDatabaseIds}
+                onSelectDatabase={handleSelectDatabaseChip}
+                onOpenDatabase={handleOpenDatabase}
+                onCloseDatabase={handleCloseDatabase}
+              />
+            </div>,
+          )
+        ) : (
+          openDatabaseBar
+        )}
+        {/* Wrapper `relative`: a página do item em "Página inteira" ancora aqui,
+            logo abaixo da faixa de abas, mantendo a faixa (e a sidebar) fixas e
+            visíveis. */}
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          <DatabaseTable
+            key={selected.id}
+            database={tableDatabase ?? selected}
+            viewId={selected.id}
+            linkedDatabaseId={selected.linkedDatabaseId ?? null}
+            allDatabases={databases}
+            onRename={handleRename}
+            onUpdateIcon={handleUpdateIcon}
+            onUpdateColumns={handleUpdateColumns}
+            onAddRow={handleAddRow}
+            onUpdateCell={handleUpdateCell}
+            onDeleteRow={handleDeleteRow}
+            onReorderRows={handleReorderRows}
+            onRowsReordered={handleRowsReordered}
+            onAddTemplate={handleAddTemplate}
+            onDeleteTemplate={handleDeleteTemplate}
+            onApplyTemplate={handleApplyTemplate}
+            onDeleteDatabase={handleDelete}
+            onOpenDatabase={handleOpenDatabase}
+            onError={setError}
+            onPatchDatabase={patchDatabase}
+            focusRequest={focusRequest}
+            onFocusApplied={() => setFocusRequest(null)}
+          />
+        </div>
       </div>
       {errorNotice}
     </div>

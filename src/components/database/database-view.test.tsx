@@ -406,6 +406,73 @@ describe("DatabaseView — estado vazio", () => {
     );
   });
 
+  it("o 'Calcular' é por visão (não compartilha entre abas)", async () => {
+    const NUM_DATABASE: Database = {
+      ...DATABASE,
+      columns: [
+        { id: "name", name: "Nome", type: "text" },
+        { id: "num", name: "Valor", type: "number" },
+      ],
+    };
+    window.localStorage.setItem(
+      "calendar:dbViews:db1",
+      JSON.stringify({
+        views: [
+          { id: "v1", type: "table", name: "Tabela" },
+          { id: "v2", type: "table", name: "V2" },
+        ],
+        activeViewId: "v1",
+        kanbanColumnId: null,
+      }),
+    );
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([NUM_DATABASE]);
+
+    render(<DatabaseView userName="Ana" />);
+
+    // Define "Soma" no Calcular da coluna "Valor", na visão ativa (v1):
+    // cabeçalho → "Calcular" → "Soma".
+    fireEvent.click(await screen.findByRole("button", { name: "Valor" }));
+    fireEvent.click(screen.getByRole("button", { name: /Calcular/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Soma" }));
+
+    // Foi salvo na VISÃO (v1) — não na coluna nem na outra visão.
+    await waitFor(() => {
+      const saved = JSON.parse(
+        window.localStorage.getItem("calendar:dbViews:db1") ?? "{}",
+      ) as { views: { id: string; calc?: Record<string, string> }[] };
+      expect(saved.views.find((v) => v.id === "v1")?.calc).toEqual({
+        num: "sum",
+      });
+      expect(saved.views.find((v) => v.id === "v2")?.calc).toBeUndefined();
+    });
+
+    // O "Calcular" NÃO vai para a coluna (nem vaza para a outra visão).
+    expect(updateDatabaseColumnsMock).not.toHaveBeenCalledWith(
+      "db1",
+      expect.arrayContaining([expect.objectContaining({ calculate: "sum" })]),
+    );
+  });
+
+  it("mostra o 'Calcular' também em colunas não numéricas (só contagens)", async () => {
+    fetchProjectsMock.mockResolvedValue([PROJECT]);
+    fetchDatabasesMock.mockResolvedValue([DATABASE]);
+
+    render(<DatabaseView userName="Ana" />);
+
+    // A coluna "Nome" é texto: o "Calcular" aparece em qualquer coluna e só
+    // oferece contagens/porcentagens (sem "Soma").
+    fireEvent.click(await screen.findByRole("button", { name: "Nome" }));
+    fireEvent.click(screen.getByRole("button", { name: /Calcular/ }));
+
+    expect(
+      screen.getByRole("button", { name: "Contagem" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Soma" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("cria uma opção pelo botão no menu da célula de seleção múltipla", async () => {
     fetchProjectsMock.mockResolvedValue([PROJECT]);
     fetchDatabasesMock.mockResolvedValue([MULTI_SELECT_DATABASE]);

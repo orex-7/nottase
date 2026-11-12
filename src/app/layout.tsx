@@ -6,7 +6,7 @@ import "./globals.css";
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Calendário Anual",
+  title: "Nottase",
   description:
     "Calendário anual com visualização de 12 meses e gerenciamento de eventos.",
   // Ícone da aba do navegador (arquivo em `public/`).

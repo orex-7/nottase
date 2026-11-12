@@ -22,8 +22,12 @@ export interface UseVirtualTableRowsOptions {
   scrollRef: React.RefObject<HTMLElement | null>;
   /** Id estável de cada índice — usado como `getItemKey` (não use o índice). */
   getRowId: (index: number) => string;
-  /** Altura estimada da linha (px). Default: `DEFAULT_ROW_HEIGHT`. */
-  estimateSize?: number;
+  /**
+   * Altura estimada de cada item (px). Pode ser um número fixo ou uma função do
+   * índice — útil quando a lista mistura linhas e cabeçalhos de grupo com
+   * alturas diferentes (default: `DEFAULT_ROW_HEIGHT`).
+   */
+  estimateSize?: number | ((index: number) => number);
   /**
    * Índices que precisam permanecer montados mesmo fora da área visível
    * (linha em drag, em edição ou com menu aberto).
@@ -81,7 +85,8 @@ export function useVirtualTableRows({
   const virtualizer = useVirtualizer({
     count,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => estimateSize,
+    estimateSize:
+      typeof estimateSize === "function" ? estimateSize : () => estimateSize,
     getItemKey: (index) => getRowId(index),
     overscan,
     scrollMargin,

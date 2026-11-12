@@ -1,10 +1,9 @@
-import Link from "next/link";
-import { CalendarDays } from "lucide-react";
+import Image from "next/image";
 
 import { LoginButton } from "@/components/auth/LoginButton";
 
 export const metadata = {
-  title: "Entrar · Calendário Anual",
+  title: "Entrar · Nottase",
 };
 
 const ERROR_MESSAGES: Record<string, string> = {
@@ -25,38 +24,48 @@ export default function LoginPage({
     : null;
 
   return (
-    <main className="flex min-h-screen items-center justify-center bg-background p-4">
-      <div className="w-full max-w-sm rounded-xl border bg-card p-8 shadow-lg">
-        <div className="mb-6 flex flex-col items-center gap-2 text-center">
-          <span className="flex h-12 w-12 items-center justify-center rounded-full bg-primary/10">
-            <CalendarDays className="h-6 w-6 text-primary" />
-          </span>
-          <h1 className="text-xl font-semibold">Calendário Anual</h1>
-          <p className="text-sm text-muted-foreground">
-            Entre com sua conta Google para acessar seus eventos.
-          </p>
-        </div>
+    <main className="relative flex min-h-screen items-center justify-center overflow-hidden bg-background p-4">
+      {/* Brilho decorativo de fundo (acento vermelho da identidade). */}
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute -top-32 left-1/2 h-72 w-72 -translate-x-1/2 rounded-full bg-primary/20 blur-[120px]"
+      />
+      <div
+        aria-hidden="true"
+        className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,hsl(var(--background))_75%)]"
+      />
 
-        {errorMessage ? (
-          <div className="mb-4 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-center text-xs text-destructive">
-            {errorMessage}
+      <div className="relative w-full max-w-sm">
+        <div className="rounded-2xl border bg-card/80 p-8 shadow-2xl backdrop-blur-sm">
+          <div className="mb-8 flex flex-col items-center gap-3 text-center">
+            <span className="flex h-14 w-14 items-center justify-center">
+              <Image
+                src="/icone.png"
+                alt="Nottase"
+                width={56}
+                height={56}
+                className="h-14 w-14 object-contain"
+                priority
+              />
+            </span>
+            <div className="space-y-1">
+              <h1 className="text-2xl font-semibold tracking-tight">
+                Nottase
+              </h1>
+              <p className="text-sm text-muted-foreground">
+                Entre com sua conta Google para acessar seus eventos.
+              </p>
+            </div>
           </div>
-        ) : null}
 
-        <LoginButton redirectTo={redirectTo} />
+          {errorMessage ? (
+            <div className="mb-4 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-center text-xs text-destructive">
+              {errorMessage}
+            </div>
+          ) : null}
 
-        <p className="mt-6 text-center text-[11px] leading-relaxed text-muted-foreground">
-          Seus eventos são privados e visíveis apenas para você.
-        </p>
-
-        <p className="mt-4 text-center text-[11px] text-muted-foreground">
-          <Link
-            href="/"
-            className="underline-offset-4 hover:text-foreground hover:underline"
-          >
-            ← Voltar para a apresentação
-          </Link>
-        </p>
+          <LoginButton redirectTo={redirectTo} />
+        </div>
       </div>
     </main>
   );
